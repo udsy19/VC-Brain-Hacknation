@@ -18,7 +18,7 @@ import logging
 from datetime import datetime
 from uuid import UUID, uuid5
 
-from schema.events import Event, EventKind, Source, utcnow
+from schema.events import Event, EventKind, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -81,32 +81,19 @@ def derive(
                     appended["green_flag"] += 1
 
     # 2. Claim validation -> contradictions the filter must exclude.
+    #
+    # `cutoff` is passed through: without it check_claims defaults to now() and
+    # validates a historical replay against present-day evidence, which is a
+    # lookahead leak in the one artifact whose credibility rests on there being none.
+    #
+    # The validator persists its own VALIDATION_RESULT events, stamped with when the
+    # evidence existed rather than when we ran. We do not write them here too — that
+    # duplicated every verdict at the wrong timestamp.
     if validate:
-        for verdict in _check_claims(company_id):
-            eid = _stable_id("validation", company_id, verdict.claim_id)
-            if eid in existing:
-                continue
-            store.append(
-                Event(
-                    event_id=eid,
-                    company_id=company_id,
-                    kind=EventKind.VALIDATION_RESULT,
-                    source=Source.VALIDATOR,
-                    observed_at=cutoff,
-                    evidence_span=verdict.corroborating_span,
-                    source_url=verdict.corroborating_url,
-                    confidence=verdict.trust,
-                    payload={
-                        "claim_id": str(verdict.claim_id),
-                        "status": str(verdict.status),
-                        "trust": verdict.trust,
-                        "claim_text": verdict.claim_text,
-                        "self_published": verdict.self_published,
-                    },
-                )
-            )
-            existing.add(eid)
-            appended["validation_result"] += 1
+        before = len(store.events(as_of=cutoff, company_id=company_id, kind="validation_result"))
+        _check_claims(company_id, cutoff)
+        after = len(store.events(as_of=cutoff, company_id=company_id, kind="validation_result"))
+        appended["validation_result"] = max(0, after - before)
 
     return {"company_id": str(company_id), "entities": len(entities), "appended": appended}
 
@@ -159,11 +146,11 @@ def _evaluate_flags(entity_id: UUID, as_of: datetime) -> list[Event]:
         return []
 
 
-def _check_claims(company_id: UUID) -> list:
+def _check_claims(company_id: UUID, as_of: datetime) -> list:
     try:
         from intelligence import validator
 
-        return validator.check_claims(company_id)
+        return validator.check_claims(company_id, as_of)
     except NotImplementedError:
         return []
     except Exception:  # noqa: BLE001 - validation needs network; never fatal

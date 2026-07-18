@@ -67,11 +67,14 @@ def _evidence(company_id: UUID, as_of: datetime) -> list[dict]:
     return out
 
 
-def _verdicts(company_id: UUID) -> list:
+def _verdicts(company_id: UUID, as_of: datetime) -> list:
+    """as_of is threaded through deliberately: without it the validator defaults to
+    now(), and a memo generated at a historical cutoff would be validated against
+    present-day evidence — lookahead, in the artifact built to prove there is none."""
     from intelligence import validator
 
     try:
-        return validator.check_claims(company_id)
+        return validator.check_claims(company_id, as_of)
     except Exception as exc:  # noqa: BLE001 - a validator outage must not block the memo
         log.info("memo: validator unavailable (%s)", exc)
         return []
@@ -227,11 +230,11 @@ def _normalize(raw: dict, allowed: set[str]) -> dict:
 
 def generate_memo(company_id: UUID | str, as_of: datetime) -> dict:
     """The five sections plus the gap list. Callers own the dissent lock, not this."""
-    from api.routers.deps import as_uuid, founder_entity_ids
+    from api.routers.deps import company_uuid, founder_entity_ids
 
-    cid = as_uuid(company_id)
+    cid = company_uuid(company_id)
     evidence = _evidence(cid, as_of) if cid else []
-    verdicts = _verdicts(cid) if cid else []
+    verdicts = _verdicts(cid, as_of) if cid else []
     gaps = _gaps(cid, verdicts, evidence)
     ambiguities = _ambiguities(evidence)
 

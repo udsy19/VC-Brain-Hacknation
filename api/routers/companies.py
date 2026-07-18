@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
+from api import attest
 from api import memo as memo_mod
 from api.routers.deps import (
     as_uuid,
@@ -125,7 +126,7 @@ def get_trace(company_id: str, event_id: str) -> dict:
     def live() -> dict:
         from memory import store
 
-        eid, cid = as_uuid(event_id), as_uuid(company_id)
+        eid, cid = as_uuid(event_id), company_uuid(company_id)
         if eid is None:
             raise HTTPException(400, "event_id is not a uuid")
         match = next(
@@ -211,7 +212,7 @@ def get_score_history(company_id: str, as_of: datetime | None = None, points: in
     def live() -> dict:
         from memory import score as score_mod, store
 
-        cid = as_uuid(company_id)
+        cid = company_uuid(company_id)
         ents = founder_entity_ids(cid) if cid else []
         if not ents:
             raise LookupError("no resolved founder entity for this company")
@@ -290,7 +291,7 @@ def get_dissent(company_id: str, as_of: datetime | None = None) -> dict:
     def live() -> dict:
         from intelligence import dissent
 
-        cid = as_uuid(company_id)
+        cid = company_uuid(company_id)
         anti = dissent.generate(cid, cutoff)
         out = {
             "company_id": company_id,
@@ -315,6 +316,10 @@ class ProofSubmission(BaseModel):
     artifact: str = ""
     trace: dict = {}
     demo: bool = False  # the seeded stage path
+    # A public repo lets the server read the commit history itself instead of
+    # taking the submitter's word for it. Optional, and the strongest attestation
+    # available — see api/attest.py.
+    repo_url: str | None = None
 
 
 @router.post("/{company_id}/proof")
@@ -324,7 +329,10 @@ def issue_proof(company_id: str) -> dict:
     def live() -> dict:
         from intelligence import proof
 
-        ch = proof.generate(as_uuid(company_id))
+        ch = proof.generate(company_uuid(company_id))
+        # The server's own record of when this went out. Without it a submitted
+        # trace cannot be placed in time except by trusting the submitter.
+        attest.record_issue(str(ch.challenge_id), ch.issued_at)
         return {
             "challenge_id": str(ch.challenge_id),
             "company_id": company_id,
@@ -357,10 +365,20 @@ def grade_proof(
         from intelligence import proof
         from memory import store
 
+        # Split the trace into what we observed and what we were told, BEFORE
+        # grading. Pushing back on the planted constraint is worth half the
+        # behavioural score, so accepting it on the client's word would hand the
+        # sharpest signal in the system to anyone willing to assert it.
+        graded_trace, attestation = attest.attest(
+            challenge_id, sub.trace, repo_url=sub.repo_url, demo=sub.demo
+        )
+
         if sub.demo:
-            events = proof.seed_demo_completion(as_uuid(company_id))
+            events = proof.seed_demo_completion(company_uuid(company_id))
         else:
-            events = proof.grade(as_uuid(challenge_id), sub.artifact, sub.trace)
+            events = proof.grade(as_uuid(challenge_id), sub.artifact, graded_trace)
+
+        events = attest.apply(events, attestation)
         appended = []
         for ev in events or []:
             store.append(ev)
@@ -369,13 +387,35 @@ def grade_proof(
             "company_id": company_id,
             "challenge_id": challenge_id,
             "graded_event_ids": appended,
+            "attestation": attestation,
             "degraded": False,
         }
 
     def fallback() -> dict:
         fixture = seed_or(f"proof_result_{company_id}", None) or seed_or("proof_result", None)
         if fixture is None:
+            # Say which of the two things went wrong. An unknown challenge is a
+            # client error — we cannot grade a submission for a challenge we never
+            # issued, and pretending otherwise would grade an unanchored trace.
+            if not attest.issued_at(challenge_id):
+                raise HTTPException(
+                    422,
+                    f"challenge {challenge_id} was not issued by this server, so the "
+                    "submitted trace cannot be anchored in time or graded",
+                )
             raise HTTPException(503, "grading unavailable and no proof fixture seeded")
-        return {**fixture, "company_id": company_id, "challenge_id": challenge_id, "degraded": True}
+        # The degraded path must still say what it is. Returning a graded-looking
+        # result with no attestation block is how an unverified trace ends up read
+        # as an observed one.
+        _, attestation = attest.attest(
+            challenge_id, sub.trace, repo_url=sub.repo_url, demo=sub.demo
+        )
+        return {
+            **fixture,
+            "company_id": company_id,
+            "challenge_id": challenge_id,
+            "attestation": attestation,
+            "degraded": True,
+        }
 
     return degrade(live, fallback)

@@ -16,9 +16,18 @@ from schema.events import Event, utcnow
 
 
 def append(event: Event) -> UUID:
+    """Append an event. Idempotent on event_id.
+
+    Derived events (green flags, proof grades, seeds) carry deterministic uuid5 ids,
+    so re-running a stage re-offers rows that are already there. Raising on that
+    turned a repeated click into a 503 rather than a no-op. `insert or ignore` is
+    translated to `on conflict do nothing` for Postgres by memory/db.py, so both
+    backends behave identically — and this is still append-only: an existing row is
+    never modified, only left alone.
+    """
     conn = db.connect()
     conn.execute(
-        "insert into events (event_id, entity_id, company_id, kind, source, source_url, "
+        "insert or ignore into events (event_id, entity_id, company_id, kind, source, source_url, "
         "observed_at, ingested_at, payload, evidence_span, confidence, integrity_flags) "
         "values (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
