@@ -60,7 +60,9 @@ class PostgresEventStore:
     def append(self, event: Event) -> UUID:
         with self._connection().cursor() as cur:
             cur.execute(
-                f"insert into events ({_EVENT_COLS}) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                f"insert into events ({_EVENT_COLS}) values "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "on conflict (event_id) do nothing",
                 (
                     event.event_id,
                     event.entity_id,

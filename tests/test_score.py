@@ -1,9 +1,11 @@
-"""Founder Score (Kalman): determinism, momentum, uncertainty, receipts, and the
-contradiction boundary."""
+"""Integrated Founder Score contract: Kalman, observations, and fallback."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
+
+import pytest
 
 from memory import score, store
 from schema.events import Event, EventKind, FounderScore, Source
@@ -11,114 +13,199 @@ from schema.events import Event, EventKind, FounderScore, Source
 T0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
-def _entity():
-    return store.get_store().create_entity("F", "f").entity_id
-
-
-def _green(eid, month, value, *, sc=0.9, source=Source.MANUAL, kind=EventKind.GREEN_FLAG):
-    return store.append(
-        Event(
-            entity_id=eid,
-            kind=kind,
-            source=source,
-            observed_at=T0 + timedelta(days=30 * month),
-            payload={"value": value, "self_consistency": sc},
-        )
+def _flag(entity_id: UUID, day: int, value: float, **kwargs) -> Event:
+    payload = kwargs.pop("payload", {})
+    if not payload or set(payload) == {"claim_id"}:
+        payload = {"value": value, **payload}
+    event = Event(
+        kind=kwargs.pop("kind", EventKind.GREEN_FLAG),
+        source=kwargs.pop("source", Source.WEB),
+        entity_id=entity_id,
+        observed_at=T0 + timedelta(days=day),
+        payload=payload,
+        **kwargs,
     )
+    store.append(event)
+    return event
+
+
+def _series(entity_id: UUID, values: list[float], step: int = 14) -> None:
+    for index, value in enumerate(values):
+        _flag(entity_id, index * step, value)
+
+
+def _at(n_obs: int, step: int = 14) -> datetime:
+    return T0 + timedelta(days=(n_obs - 1) * step, hours=1)
 
 
 def test_no_evidence_returns_wide_neutral_prior() -> None:
-    fs = score.founder(_entity(), as_of=T0)
-    assert isinstance(fs, FounderScore)
-    assert abs(fs.mu - 0.5) < 1e-9
-    assert abs(fs.band - 0.5) < 1e-9
-    assert abs(fs.trend) < 1e-9
-    assert fs.contributing_event_ids == []
-    assert fs.model == "kalman"
+    result = score.founder(uuid4(), as_of=T0)
+    assert isinstance(result, FounderScore)
+    assert result.mu == pytest.approx(0.5)
+    assert result.band == pytest.approx(0.5)
+    assert result.trend == pytest.approx(0.0)
+    assert result.contributing_event_ids == []
 
 
 def test_deterministic_same_input_same_output() -> None:
-    eid = _entity()
-    _green(eid, 0, 0.6)
-    _green(eid, 3, 0.8)
-    a = score.founder(eid, as_of=T0 + timedelta(days=200))
-    b = score.founder(eid, as_of=T0 + timedelta(days=200))
-    assert (a.mu, a.band, a.trend) == (b.mu, b.band, b.trend)
+    entity_id = uuid4()
+    _series(entity_id, [0.6, 0.8], step=90)
+    first = score.founder(entity_id, as_of=T0 + timedelta(days=200))
+    second = score.founder(entity_id, as_of=T0 + timedelta(days=200))
+    assert (first.mu, first.band, first.trend) == (second.mu, second.band, second.trend)
 
 
-def test_rising_evidence_lifts_mu_and_gives_positive_trend() -> None:
-    eid = _entity()
-    _green(eid, 0, 0.6)
-    _green(eid, 3, 0.72)
-    _green(eid, 6, 0.82)
-    fs = score.founder(eid, as_of=T0 + timedelta(days=190))
-    assert fs.mu > 0.6
-    assert fs.trend > 0
-    assert len(fs.contributing_event_ids) == 3
-
-
-def test_an_observation_tightens_the_band() -> None:
-    eid = _entity()
-    as_of = T0 + timedelta(days=1)
-    prior = score.founder(eid, as_of=as_of).band
-    _green(eid, 0, 0.7)
-    posterior = score.founder(eid, as_of=as_of).band
-    assert posterior < prior
+def test_band_tightens_as_observations_accumulate() -> None:
+    entity_id = uuid4()
+    _series(entity_id, [0.7] * 8)
+    bands = [score.founder(entity_id, _at(n)).band for n in range(1, 9)]
+    assert all(a > b for a, b in zip(bands, bands[1:]))
+    assert bands[-1] < bands[0]
 
 
 def test_staleness_widens_the_band() -> None:
-    eid = _entity()
-    last = T0 + timedelta(days=30)
-    _green(eid, 0, 0.7)
-    _green(eid, 1, 0.75)
-    fresh = score.founder(eid, as_of=last).band
-    stale = score.founder(eid, as_of=last + timedelta(days=365)).band
-    assert stale > fresh
+    entity_id = uuid4()
+    _series(entity_id, [0.7] * 6)
+    fresh = score.founder(entity_id, _at(6))
+    stale = score.founder(entity_id, _at(6) + timedelta(days=365))
+    assert stale.band > fresh.band
+    assert stale.contributing_event_ids == fresh.contributing_event_ids
 
 
-def test_low_noise_proof_event_moves_score_more_than_noisy_web_flag() -> None:
-    eid_proof = _entity()
-    _green(eid_proof, 0, 0.9, sc=0.95, source=Source.PROOF_PROTOCOL, kind=EventKind.PROOF_ARTIFACT)
-    eid_web = _entity()
-    _green(eid_web, 0, 0.9, sc=0.4, source=Source.WEB)
-    at = T0 + timedelta(days=1)
-    assert score.founder(eid_proof, as_of=at).mu > score.founder(eid_web, as_of=at).mu
+@pytest.mark.parametrize(
+    "values,positive",
+    [([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], True), ([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3], False)],
+)
+def test_trend_is_structural_momentum(values: list[float], positive: bool) -> None:
+    entity_id = uuid4()
+    _series(entity_id, values)
+    trend = score.founder(entity_id, _at(len(values))).trend
+    assert (trend > 1e-3) is positive
 
 
-def test_contributing_event_ids_are_the_receipts() -> None:
-    eid = _entity()
-    e1 = _green(eid, 0, 0.6)
-    e2 = _green(eid, 2, 0.7)
-    fs = score.founder(eid, as_of=T0 + timedelta(days=120))
-    assert set(fs.contributing_event_ids) == {e1, e2}
+def test_no_lookahead() -> None:
+    entity_id = uuid4()
+    values = [0.5, 0.55, 0.6, 0.95, 0.97, 0.99]
+    _series(entity_id, values)
+    midpoint = score.founder(entity_id, _at(3))
+    final = score.founder(entity_id, _at(len(values)))
+    assert midpoint.mu < final.mu
+    assert len(midpoint.contributing_event_ids) == 3
+    assert len(final.contributing_event_ids) == 6
 
 
-def test_contradicted_observation_is_excluded() -> None:
-    eid = _entity()
-    good = _green(eid, 0, 0.85)
-    bad = _green(eid, 1, 0.2, sc=0.4, source=Source.WEB)
-    with_bad = score.founder(eid, as_of=T0 + timedelta(days=90))
-    # Now contradict the weak flag.
+def test_contradicted_claims_are_excluded_from_observations() -> None:
+    entity_id, claim_id = uuid4(), uuid4()
+    _series(entity_id, [0.2, 0.2, 0.2])
+    tainted = _flag(entity_id, 42, 0.99, payload={"claim_id": str(claim_id)})
+    as_of = T0 + timedelta(days=60)
+    with_claim = score.founder(entity_id, as_of)
+    assert tainted.event_id in with_claim.contributing_event_ids
     store.append(
         Event(
-            entity_id=eid,
-            kind=EventKind.CONTRADICTION,
+            kind=EventKind.VALIDATION_RESULT,
             source=Source.VALIDATOR,
-            observed_at=T0 + timedelta(days=45),
-            payload={"target_event_id": str(bad)},
+            observed_at=T0 + timedelta(days=50),
+            payload={"claim_id": str(claim_id), "status": "contradicted"},
         )
     )
-    without_bad = score.founder(eid, as_of=T0 + timedelta(days=90))
-    assert bad not in without_bad.contributing_event_ids
-    assert good in without_bad.contributing_event_ids
-    assert without_bad.mu != with_bad.mu  # dropping the contradicted flag changed the score
+    after = score.founder(entity_id, as_of)
+    assert tainted.event_id not in after.contributing_event_ids
+    assert after.mu < with_claim.mu
+    assert score.observations(entity_id, as_of).dropped_contradicted == [tainted.event_id]
 
 
-def test_forecast_widens_interval_further_out() -> None:
-    eid = _entity()
-    _green(eid, 0, 0.7)
-    _green(eid, 2, 0.75)
-    as_of = T0 + timedelta(days=70)
-    _mu30, band30 = score.forecast(eid, as_of, k_days=30)
-    _mu365, band365 = score.forecast(eid, as_of, k_days=365)
-    assert band365 > band30
+def test_verified_claims_are_kept() -> None:
+    entity_id, claim_id = uuid4(), uuid4()
+    supported = _flag(entity_id, 0, 0.8, payload={"claim_id": str(claim_id)})
+    store.append(
+        Event(
+            kind=EventKind.VALIDATION_RESULT,
+            source=Source.VALIDATOR,
+            observed_at=T0,
+            payload={"claim_id": str(claim_id), "status": "verified"},
+        )
+    )
+    assert score.founder(entity_id, T0 + timedelta(days=1)).contributing_event_ids == [
+        supported.event_id
+    ]
+
+
+def test_payload_shapes_are_parsed_defensively() -> None:
+    entity_id = uuid4()
+    _flag(entity_id, 0, 0.6)
+    _flag(
+        entity_id,
+        1,
+        0.0,
+        payload={"flags": [{"fired": True, "weight": 3.0}, {"fired": False, "weight": 1.0}]},
+    )
+    _flag(entity_id, 2, 0.0, payload={"notes": "unrecognised"})
+    observed = score.observations(entity_id, T0 + timedelta(days=3))
+    assert [item.y for item in observed.kept] == pytest.approx([0.6, 0.75])
+
+
+def test_proof_events_move_the_score_more_than_noisy_deck_evidence() -> None:
+    entity_id = uuid4()
+    for index, value in enumerate([0.45, 0.5, 0.48]):
+        _flag(entity_id, index * 21, value, source=Source.DECK)
+    before = score.founder(entity_id, T0 + timedelta(days=60))
+    _flag(entity_id, 70, 0.9, kind=EventKind.PROOF_ARTIFACT, source=Source.PROOF_PROTOCOL)
+    _flag(entity_id, 71, 0.85, kind=EventKind.PROOF_BEHAVIOR, source=Source.PROOF_PROTOCOL)
+    after = score.founder(entity_id, T0 + timedelta(days=80))
+    assert after.mu > before.mu
+    assert after.band < before.band
+
+
+def test_source_noise_and_zero_consistency_are_safe() -> None:
+    deck = Event(kind=EventKind.GREEN_FLAG, source=Source.DECK, observed_at=T0)
+    proof = Event(kind=EventKind.PROOF_ARTIFACT, source=Source.PROOF_PROTOCOL, observed_at=T0)
+    assert score._noise(deck, {}) > score._noise(proof, {})
+    assert score._noise(deck, {"self_consistency": 0.0}) < float("inf")
+
+
+def test_forecast_propagates_uncertainty_forward() -> None:
+    entity_id = uuid4()
+    _series(entity_id, [0.3, 0.4, 0.5, 0.6, 0.7])
+    as_of = _at(5)
+    now = score.founder(entity_id, as_of)
+    mu_30, band_30 = score.forecast(entity_id, as_of, 30)
+    mu_90, band_90 = score.forecast(entity_id, as_of, 90)
+    assert mu_30 > now.mu
+    assert mu_90 >= mu_30
+    assert band_90 > band_30 > now.band
+
+
+def test_score_model_flag_dispatches_to_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    entity_id = uuid4()
+    _series(entity_id, [0.4, 0.6, 0.8, 0.9])
+    as_of = _at(4)
+    assert score.founder(entity_id, as_of).model == "kalman"
+    monkeypatch.setenv("SCORE_MODEL", "beta_binomial")
+    result = score.founder(entity_id, as_of)
+    assert isinstance(result, FounderScore)
+    assert result.model == "beta_binomial"
+    assert result.entity_id == entity_id and result.as_of == as_of
+    assert result.band > 0.0 and result.trend > 0.0
+    assert len(result.contributing_event_ids) == 4
+
+
+def test_fallback_honours_contradictions_and_empty_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCORE_MODEL", "beta_binomial")
+    entity_id, claim_id = uuid4(), uuid4()
+    _series(entity_id, [0.2, 0.2])
+    tainted = _flag(entity_id, 30, 0.99, payload={"claim_id": str(claim_id)})
+    store.append(
+        Event(
+            kind=EventKind.VALIDATION_RESULT,
+            source=Source.VALIDATOR,
+            observed_at=T0,
+            payload={"claims": [{"claim_id": str(claim_id), "status": "contradicted"}]},
+        )
+    )
+    result = score.founder(entity_id, T0 + timedelta(days=40))
+    assert tainted.event_id not in result.contributing_event_ids
+    assert result.mu < 0.5
+    empty = score.founder(uuid4(), T0)
+    assert empty.model == "beta_binomial"
+    assert empty.mu == pytest.approx(0.5)

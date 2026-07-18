@@ -1,19 +1,9 @@
 """Append-only event store + entity registry. Owner: A.
 
-Note the signature: as_of is REQUIRED and has no default. That is deliberate —
-it makes the lookahead bug hard to write rather than merely discouraged.
-
-Backend: an in-process append-only store. It mirrors the five tables in
-schema/migrations/001_init.sql (events, entities, entity_aliases, companies,
-merges) exactly, so the same code runs whether the demo is wired to Supabase or
-not. In-memory is the default because a live demo that depends on a hosted DB
-being healthy is a demo that fails (see D.md). The committed migration is what
-gives us Postgres parity when we want persistence; the runtime store here is
-what keeps the backtest and the demo hermetic and fast.
-
-The append-only property is enforced structurally: this store exposes no update
-or delete for events. Corrections are new events. (The SQL migration enforces
-the same thing with a trigger, for the hosted path.)
+The public Memory contract is backend-neutral. In-memory is the deterministic
+offline default; ``MEMORY_BACKEND=postgres`` selects the persistent backend.
+Compatibility helpers at the bottom keep C's API/sourcing code working without
+introducing a second store abstraction.
 """
 
 from __future__ import annotations
@@ -33,45 +23,38 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Alias:
-    """One resolvable identifier pointing at an entity. Unique on (kind, value),
-    exactly like entity_aliases in the SQL schema."""
-
     entity_id: UUID
-    kind: str  # 'email' | 'url' | 'handle:github' | 'twitter' | 'context' | 'name'
-    value: str  # caller-normalized; the store matches exactly, it never normalizes
+    kind: str
+    value: str
     source: str
 
 
 @dataclass(frozen=True)
 class Merge:
-    """An entity-resolution decision, including the AMBIGUOUS ones we refuse to
-    guess on. Mirrors the merges table."""
-
     entity_a: UUID
     entity_b: UUID
-    status: str  # 'merged' | 'ambiguous' | 'rejected'
+    status: str
     score: float
     rationale: str
     decided_at: datetime = field(default_factory=utcnow)
 
 
 class EventStore:
-    """The spine. Append-only event log + the entity/company/alias/merge registry
-    every other module reads through."""
+    """Append-only event log plus entity/company/alias/merge registries."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._events: list[Event] = []
         self._entities: dict[UUID, Entity] = {}
         self._companies: dict[UUID, Company] = {}
-        self._aliases: dict[tuple[str, str], Alias] = {}  # (kind, value) -> Alias
+        self._aliases: dict[tuple[str, str], Alias] = {}
         self._merges: list[Merge] = []
 
-    # -- events -------------------------------------------------------------
-
     def append(self, event: Event) -> UUID:
-        """The only way anything enters history. Append-only: never overwrites."""
+        """Append once by event ID; re-offering an existing event is a no-op."""
         with self._lock:
+            if any(existing.event_id == event.event_id for existing in self._events):
+                return event.event_id
             self._events.append(event)
         return event.event_id
 
@@ -83,12 +66,7 @@ class EventStore:
         company_id: UUID | None = None,
         kind: str | None = None,
     ) -> list[Event]:
-        """Returns only events with observed_at <= as_of. No exceptions, no flags.
-
-        This is the single chokepoint the no-lookahead invariant is enforced at:
-        every downstream read (queries, scoring, backtest) goes through here, so a
-        future event physically cannot reach a scorer scoped to an earlier as_of.
-        """
+        """Return only events with observed_at <= as_of, in deterministic order."""
         if as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware — a naive as_of silently mis-filters")
         with self._lock:
@@ -100,11 +78,8 @@ class EventStore:
                 and (company_id is None or e.company_id == company_id)
                 and (kind is None or e.kind == kind)
             ]
-        # Deterministic order: by world-time, then ingest-time, then id (stable).
         out.sort(key=lambda e: (e.observed_at, e.ingested_at, str(e.event_id)))
         return out
-
-    # -- entities -----------------------------------------------------------
 
     def create_entity(self, display_name: str, name_normalized: str) -> Entity:
         entity = Entity(display_name=display_name, name_normalized=name_normalized)
@@ -119,19 +94,14 @@ class EventStore:
         with self._lock:
             return sorted(self._entities.values(), key=lambda e: str(e.entity_id))
 
-    # -- aliases ------------------------------------------------------------
-
     def add_alias(self, entity_id: UUID, kind: str, value: str, source: str) -> UUID:
-        """Bind an identifier to an entity. First-writer-wins: if (kind, value)
-        already points elsewhere we DON'T reassign it (silently stealing an
-        identifier is how you merge two people by accident) — we return the
-        current owner so the caller can decide (usually: AMBIGUOUS)."""
+        """First writer wins for each (kind, value), matching the SQL constraint."""
         key = (kind, value)
         with self._lock:
             existing = self._aliases.get(key)
             if existing is not None:
                 return existing.entity_id
-            self._aliases[key] = Alias(entity_id=entity_id, kind=kind, value=value, source=source)
+            self._aliases[key] = Alias(entity_id, kind, value, source)
         return entity_id
 
     def find_by_alias(self, kind: str, value: str) -> UUID | None:
@@ -147,8 +117,6 @@ class EventStore:
         with self._lock:
             aliases = [a for a in self._aliases.values() if a.kind == kind]
         return sorted(aliases, key=lambda a: (a.kind, a.value, str(a.entity_id)))
-
-    # -- companies ----------------------------------------------------------
 
     def create_company(
         self,
@@ -173,14 +141,10 @@ class EventStore:
         with self._lock:
             return sorted(self._companies.values(), key=lambda c: str(c.company_id))
 
-    # -- merges -------------------------------------------------------------
-
     def record_merge(
         self, entity_a: UUID, entity_b: UUID, status: str, score: float, rationale: str
     ) -> Merge:
-        merge = Merge(
-            entity_a=entity_a, entity_b=entity_b, status=status, score=score, rationale=rationale
-        )
+        merge = Merge(entity_a, entity_b, status, score, rationale)
         with self._lock:
             self._merges.append(merge)
         return merge
@@ -200,11 +164,7 @@ class EventStore:
             ),
         )
 
-    # -- test / demo support ------------------------------------------------
-
     def reset(self) -> None:
-        """Wipe all state. For test isolation and demo reseeding only — there is
-        no per-record delete, because the log is append-only."""
         with self._lock:
             self._events.clear()
             self._entities.clear()
@@ -213,15 +173,8 @@ class EventStore:
             self._merges.clear()
 
 
-# ---------------------------------------------------------------------------
-# Backend selection. SHARED §4 imports `store.append` / `store.events` directly;
-# the richer entity API is reached via get_store(). The backend is chosen by
-# MEMORY_BACKEND: `memory` (default, deterministic, offline — tests and demo) or
-# `postgres` (persistent Supabase/Postgres). Downstream code never learns which.
-# ---------------------------------------------------------------------------
-
-_default = EventStore()  # the in-memory backend, always available
-_pg: PostgresEventStore | None = None  # lazily built when postgres is selected
+_default = EventStore()
+_pg: PostgresEventStore | None = None
 
 
 def _backend() -> str:
@@ -260,12 +213,41 @@ def events(
     company_id: UUID | None = None,
     kind: str | None = None,
 ) -> list[Event]:
-    """Returns only events with observed_at <= as_of. No exceptions, no flags."""
     return get_store().events(as_of=as_of, entity_id=entity_id, company_id=company_id, kind=kind)
 
 
 def reset() -> None:
-    """Resets the in-memory backend only. It deliberately does NOT truncate a
-    Postgres database — an autouse test fixture must never be able to wipe a real
-    one. Postgres reset is explicit (PostgresEventStore.reset)."""
+    """Reset only the in-memory backend; never truncate a real Postgres database."""
     _default.reset()
+
+
+# C compatibility helpers. These return dictionaries because the API/sourcing layer
+# predates A's typed Entity/Company models. The underlying store remains singular.
+def upsert_entity(name: str, normalized: str) -> UUID:
+    current = next((e for e in get_store().entities() if e.name_normalized == normalized), None)
+    return current.entity_id if current else get_store().create_entity(name, normalized).entity_id
+
+
+def upsert_company(name: str, archetype: int | None = None) -> UUID:
+    current = next((c for c in get_store().companies() if c.name == name), None)
+    if current:
+        return current.company_id
+    return get_store().create_company(name, archetype=archetype).company_id
+
+
+def get_entity(entity_id: UUID) -> dict | None:
+    entity = get_store().get_entity(entity_id)
+    return entity.model_dump(mode="json") if entity else None
+
+
+def get_company(company_id: UUID) -> dict | None:
+    company = get_store().get_company(company_id)
+    return company.model_dump(mode="json") if company else None
+
+
+def all_entities() -> list[dict]:
+    return [entity.model_dump(mode="json") for entity in get_store().entities()]
+
+
+def all_companies() -> list[dict]:
+    return [company.model_dump(mode="json") for company in get_store().companies()]
