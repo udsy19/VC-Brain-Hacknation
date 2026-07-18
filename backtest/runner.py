@@ -249,7 +249,17 @@ def run_calibration() -> dict:
         peak = _peak(series)
         results.append(
             {
-                "founder": m.get("founder"),
+                # The cohort names its entries `name`; earlier drafts used `founder`.
+                # Carrying only one dropped every label, so the calibration chart had
+                # no way to say who each line was.
+                "founder": m.get("founder") or m.get("name"),
+                "name": m.get("name") or m.get("founder"),
+                "id": m.get("id"),
+                "sector": m.get("sector"),
+                "outcome": m.get("outcome")
+                or m.get("what_happened")
+                or ("breakout" if m.get("label") == "winner" else None),
+                "why": m.get("why_we_deprioritized") or m.get("truncation_note"),
                 "company_id": m.get("company_id"),
                 "label": str(m.get("label", "unknown")).lower(),
                 "truncation_date": _truncation(m).isoformat(),

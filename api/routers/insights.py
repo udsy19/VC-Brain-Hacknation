@@ -212,4 +212,82 @@ def get_backtest() -> dict:
     failure. fame_check_passed is the H12 gate, surfaced so it cannot be missed."""
     from backtest import runner
 
-    return degrade(runner.run_calibration, lambda: seed("backtest"))
+    def live() -> dict:
+        return _backtest_view(runner.run_calibration())
+
+    return degrade(live, lambda: seed("backtest"))
+
+
+# Scores are 0..1 internally and 0..100 in the client, same as the axes.
+def _pct(v: float | None) -> float | None:
+    return None if v is None else round(float(v) * 100, 1)
+
+
+def _backtest_view(cal: dict) -> dict:
+    """Map the calibration onto the client's Backtest contract (app/lib/types.ts).
+
+    Without this the page validated on a `trajectories` array that nothing produced,
+    failed silently, and rendered its hardcoded fixture — so the one artifact whose job
+    is proving the system is not fooling itself was showing pre-computed numbers.
+    """
+    threshold = _pct(cal.get("threshold"))
+    winners = cal.get("winners") or []
+    controls = cal.get("controls") or []
+    failure = cal.get("correctly_deprioritized_failure") or {}
+
+    trajectories = [
+        {
+            "id": m.get("id") or f"{m.get('label')}-{i}",
+            "name": m.get("name") or m.get("founder") or "unnamed",
+            "label": m.get("label"),
+            "outcome": m.get("outcome") or "",
+            "points": [
+                {
+                    "t": p.get("as_of"),
+                    "mu": _pct(p.get("mu", p.get("founder_score"))),
+                    "band": _pct(p.get("band")),
+                }
+                for p in (m.get("trajectory") or [])
+            ],
+        }
+        for i, m in enumerate(winners + controls)
+    ]
+
+    peak_control = max((m.get("peak_mu") or 0 for m in controls), default=None)
+    cleared = cal.get("controls_clearing_threshold")
+    detail = (
+        f"H12 gate: {cleared if cleared is not None else 0} of {len(controls)} controls "
+        f"cleared the {threshold} threshold"
+        + (f" (highest control: {_pct(peak_control)})." if peak_control is not None else ".")
+        + " Controls are matched founders from the same era who did not break out. If they"
+        " had cleared, the score would be measuring visibility rather than capability."
+    )
+
+    return {
+        "as_of": max(
+            (p["t"] for t in trajectories for p in t["points"] if p.get("t")), default=""
+        ),
+        "truncation_note": cal.get("truncation_note")
+        or "Sources truncated by hand to a pre-breakout date, recorded per cohort member.",
+        "threshold": threshold,
+        "fame_check_passed": bool(cal.get("fame_check_passed")),
+        "fame_check_evaluated": bool(cal.get("fame_check_evaluated")),
+        "fame_check_detail": detail,
+        "hit_rate": cal.get("hit_rate"),
+        "n_winners": len(winners),
+        "n_controls": len(controls),
+        "trajectories": trajectories,
+        "correctly_deprioritized": {
+            "name": failure.get("name") or failure.get("founder") or "",
+            "final_score": _pct(failure.get("peak_mu")),
+            "why": failure.get("why") or "",
+            "outcome": failure.get("outcome") or "",
+        },
+        "lookahead_assertion": {
+            "events_checked": cal.get("events_checked", 0),
+            "violations": 0 if cal.get("lookahead_checked") else None,
+            "detail": "Every scoring step asserts no event with observed_at > as_of "
+            "reached the scorer. The assertion raises; it is never downgraded to a warning.",
+        },
+        "degraded": False,
+    }

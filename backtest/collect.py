@@ -131,6 +131,14 @@ def load_cohort() -> dict:
         for m in blob.get(key) or []:
             members.append({**m, "label": m.get("label", label)})
 
+    # The cohort records its deprioritized failure as a single top-level object, not
+    # inside a `failures` list — so it was never loaded as a member and the "show the
+    # miss" slide came back empty. D.md calls that the most credible slide in the deck:
+    # a backtest that only shows the winners it caught is a marketing document.
+    failure = blob.get("correctly_deprioritized_failure")
+    if isinstance(failure, dict) and not any(m.get("label") == "failure" for m in members):
+        members.append({**failure, "label": "failure"})
+
     if not members:
         raise LookupError("backtest cohort is empty")
     return {"threshold": _threshold(blob), "members": members, "policy": _policy(blob)}
