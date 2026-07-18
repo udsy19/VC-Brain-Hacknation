@@ -1,162 +1,165 @@
 """Three axes, never averaged. Owner: C. See C.md H3-8.
 
-Founder | Market | Idea-vs-Market. There is deliberately no combined field on
-ScreeningResult and none is computed here: a great founder on a dead market is a
-DIFFERENT decision from a mediocre founder on a great one, and a mean destroys
-exactly that distinction. Rank lexicographically or by explicit policy, never by
-averaging.
+Founder | Market | Idea-vs-Market. A great founder on a dead market is a different
+decision than a mediocre founder on a great one — averaging destroys exactly that
+distinction, so no mean exists here or anywhere downstream. Ranking uses an explicit
+lexicographic policy (`rank_key`), never a blend.
 
-Every axis carries evidence_event_ids. No score without receipts.
+The founder axis READS A's filter output; it never re-derives it. The other two axes
+are LLM-judged from as_of-scoped company events, with receipts: the judge may only
+cite event ids it was shown, and anything it invents is dropped.
 """
 
 from __future__ import annotations
 
-import logging
+import json
+import math
+from collections.abc import Callable
 from datetime import datetime
+from numbers import Real
 from uuid import UUID
 
-from core import llm, search
-from schema.events import Axis, Event, EventKind, ScreeningResult
+from core import llm
+from schema.events import Axis, Event, EventKind, FounderScore, ScreeningResult
 
-log = logging.getLogger(__name__)
+Judge = Callable[..., str | dict]
 
-MAX_CLAIMS = 25
-MAX_RESULTS = 5
+_SNIPPET_MAX = 400
 
-# A founder score with a band this wide is a coin flip; confidence goes to zero.
-BAND_FLOOR = 0.5
-
-UNKNOWN = Axis(score=0.0, trend=0.0, confidence=0.0, evidence_event_ids=[])
-
-_SYSTEM = (
-    "You are a screening analyst. Score only what the evidence supports and say so "
-    "when it supports little. Judge the substance of the work and the market — never "
-    "who the founders are or where they have been."
+_MARKET_SYSTEM = (
+    "You score the MARKET axis for an AI-infra / dev-tools company: timing, pull, and "
+    "how alive the problem space is right now. Score strictly from the evidence events "
+    "provided — no outside knowledge, no assumptions about the people involved."
+)
+_IDEA_VS_MARKET_SYSTEM = (
+    "You score the IDEA-VS-MARKET axis: does this specific approach fit where the "
+    "market actually is — wedge, differentiation, why-now. Score strictly from the "
+    "evidence events provided — no outside knowledge."
+)
+_AXIS_PROMPT = (
+    "Evidence events follow as JSON (id, kind, observed_at, text). Return JSON with "
+    'keys: "score" (0..1), "trend" (-1..1, direction over time), "confidence" (0..1, '
+    'how well the evidence supports the score), "evidence_event_ids" (ids you relied '
+    'on — ONLY ids from the provided list), "rationale" (one paragraph). '
+    "Thin or missing evidence means low confidence, never an invented score."
 )
 
-_MARKET_PROMPT = """Assess the MARKET this company is operating in, from its own claims and
-the web context below. You are scoring the market itself, not the company.
-
-Return JSON: {"score": <0..1 how attractive and real this market is>,
- "trend": <-1..1 whether it is growing or shrinking>,
- "confidence": <0..1 how much the evidence below actually supports your answer>,
- "rationale": "<two sentences>"}
-
-Score low for markets that are shrinking, already consolidated, or that the evidence
-does not show exists. confidence must be low when the context is thin — that is the
-honest answer and it is more useful than a confident guess."""
-
-_FIT_PROMPT = """Assess IDEA-vs-MARKET FIT: does this specific idea address this specific
-market's actual pain, at the right moment, in a way the market can adopt?
-
-Return JSON: {"score": <0..1 fit>, "trend": <-1..1 improving or decaying>,
- "confidence": <0..1>, "rationale": "<two sentences>"}
-
-A strong idea in the wrong market scores low here. So does a right-market idea that
-nobody in that market can actually buy or adopt. Timing counts."""
+# Uninformative axis: judge failed or nothing to judge. Never a crash, never fabricated.
+_FALLBACK = {"score": 0.5, "trend": 0.0, "confidence": 0.0}
 
 
-def _company_events(company_id: UUID, as_of: datetime) -> list[Event]:
-    try:
-        from memory import store
-
-        return store.events(as_of=as_of, company_id=company_id)
-    except Exception as exc:
-        log.warning("screen: events unavailable for %s (%s)", company_id, exc)
-        return []
+def _clip(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
 
 
-def _company_name(company_id: UUID) -> str:
-    try:
-        from memory import store
-
-        return (store.get_company(company_id) or {}).get("name") or ""
-    except Exception:
-        return ""
-
-
-def _founder_axis(events: list[Event], as_of: datetime) -> Axis:
-    """Reads A's score.founder(). Never re-derived here.
-
-    Several founders are not averaged either — we take the strongest, and carry
-    that founder's receipts.
-    """
-    best: Axis | None = None
-    for entity_id in dict.fromkeys(e.entity_id for e in events if e.entity_id):
-        try:
-            from memory import score
-
-            fs = score.founder(entity_id, as_of)
-        except Exception as exc:  # A's filter is built in parallel — degrade, don't crash
-            log.warning("screen: founder score unavailable for %s (%s)", entity_id, exc)
-            continue
-        axis = Axis(
-            score=min(max(fs.mu, 0.0), 1.0),
-            trend=fs.trend,
-            confidence=round(max(0.0, 1.0 - fs.band / BAND_FLOOR), 3),
-            evidence_event_ids=list(fs.contributing_event_ids),
-        )
-        if best is None or axis.score > best.score:
-            best = axis
-    return best or UNKNOWN
+def _snippet(e: Event) -> str:
+    parts = [e.evidence_span or ""]
+    for key in ("title", "text", "body", "claim", "abstract", "description"):
+        v = e.payload.get(key)
+        if isinstance(v, str):
+            parts.append(v)
+    return " ".join(p for p in parts if p)[:_SNIPPET_MAX]
 
 
-def _claim_context(claims: list[Event]) -> str:
-    lines = []
-    for e in claims[:MAX_CLAIMS]:
-        text = e.payload.get("claim") or e.payload.get("text") or e.evidence_span or ""
-        if text:
-            lines.append(f"- [{e.evidence_span or e.event_id}] {text}")
-    return "\n".join(lines)
-
-
-def _web_context(query: str) -> str:
-    if not query.strip():
-        return ""
-    try:
-        results = search.search(query, max_results=MAX_RESULTS)
-    except Exception as exc:
-        log.warning("screen: web context unavailable (%s)", exc)
-        return ""
-    return "\n\n".join(f"[{r.url}] {r.title}\n{r.snippet}" for r in results)
-
-
-def _llm_axis(prompt: str, context: str, evidence_ids: list[UUID]) -> Axis:
-    if not context.strip():
-        return UNKNOWN  # no evidence, no score. Say nothing rather than guess.
-    try:
-        out = llm.complete(prompt, system=_SYSTEM, tier="fast", untrusted=context, json_mode=True)
-    except Exception as exc:
-        log.warning("screen: axis assessment failed (%s)", exc)
-        return UNKNOWN
-    if not isinstance(out, dict):
-        return UNKNOWN
-
-    def _f(key: str, lo: float, hi: float) -> float:
-        v = out.get(key)
-        return min(max(float(v), lo), hi) if isinstance(v, (int, float)) else 0.0
-
+def founder_axis(fs: FounderScore) -> Axis:
+    """A's filter output, reshaped. score=mu, trend=nu, confidence narrows with the band."""
     return Axis(
-        score=_f("score", 0.0, 1.0),
-        trend=_f("trend", -1.0, 1.0),
-        confidence=_f("confidence", 0.0, 1.0),
-        evidence_event_ids=evidence_ids,
+        score=fs.mu,
+        trend=fs.trend,
+        confidence=_clip(1.0 - fs.band, 0.0, 1.0),
+        evidence_event_ids=list(fs.contributing_event_ids),
     )
 
 
-def three_axis(company_id: UUID, as_of: datetime) -> ScreeningResult:
-    events = _company_events(company_id, as_of)
-    claims = [e for e in events if str(e.kind) == str(EventKind.DECK_CLAIM)]
-    claim_ids = [e.event_id for e in claims]
+def _llm_axis(events: list[Event], judge: Judge, system: str) -> Axis:
+    events = [
+        event for event in events if event.kind != EventKind.INTEGRITY and not event.integrity_flags
+    ]
+    if not events:
+        return Axis(**_FALLBACK)
 
-    context = _claim_context(claims)
-    web = _web_context(f"{_company_name(company_id)} market size growth competitors".strip())
-    combined = f"COMPANY'S OWN CLAIMS:\n{context}\n\nWEB CONTEXT:\n{web}" if context or web else ""
+    docs = [
+        {
+            "event_id": str(e.event_id),
+            "kind": str(e.kind),
+            "observed_at": e.observed_at.isoformat(),
+            "text": _snippet(e),
+        }
+        for e in events
+    ]
+    valid_ids = {d["event_id"] for d in docs if d["text"].strip()}
+
+    try:
+        raw = judge(
+            _AXIS_PROMPT,
+            system=system,
+            tier="fast",
+            untrusted=json.dumps(docs),  # event text is founder/web-supplied: Invariant #4
+            json_mode=True,
+        )
+        data = raw if isinstance(raw, dict) else json.loads(raw)
+        required = {"score", "trend", "confidence", "evidence_event_ids", "rationale"}
+        if not isinstance(data, dict) or not required.issubset(data):
+            raise ValueError("malformed axis response")
+        if (
+            not isinstance(data["evidence_event_ids"], list)
+            or not isinstance(data["rationale"], str)
+            or not data["rationale"].strip()
+        ):
+            raise ValueError("malformed axis response")
+        raw_values = [data[key] for key in ("score", "trend", "confidence")]
+        if not all(isinstance(value, Real) and not isinstance(value, bool) for value in raw_values):
+            raise ValueError("malformed axis value")
+        values = [float(value) for value in raw_values]
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("non-finite axis value")
+        cited = list(dict.fromkeys(str(i) for i in data["evidence_event_ids"]))
+        receipts = [UUID(i) for i in cited if i in valid_ids]  # no invented receipts
+        if not receipts:
+            return Axis(**_FALLBACK)
+        return Axis(
+            score=_clip(values[0], 0.0, 1.0),
+            trend=_clip(values[1], -1.0, 1.0),
+            confidence=_clip(values[2], 0.0, 1.0),
+            evidence_event_ids=receipts,
+        )
+    except Exception:
+        return Axis(**_FALLBACK)
+
+
+def market_axis(events: list[Event], judge: Judge = llm.complete) -> Axis:
+    return _llm_axis(events, judge, _MARKET_SYSTEM)
+
+
+def idea_vs_market_axis(events: list[Event], judge: Judge = llm.complete) -> Axis:
+    return _llm_axis(events, judge, _IDEA_VS_MARKET_SYSTEM)
+
+
+def three_axis(company_id: UUID, as_of: datetime) -> ScreeningResult:
+    """Store-backed entry point (SHARED §4). Every read below is as_of-scoped."""
+    from memory import score as founder_filter
+    from memory import store
+
+    events = store.events(company_id=company_id, as_of=as_of)
+    entity_ids = [e.entity_id for e in events if e.entity_id is not None]
+    if entity_ids:
+        founder = founder_axis(founder_filter.founder(entity_ids[0], as_of))
+    else:
+        founder = Axis(**_FALLBACK)
 
     return ScreeningResult(
         company_id=company_id,
         as_of=as_of,
-        founder=_founder_axis(events, as_of),
-        market=_llm_axis(_MARKET_PROMPT, combined, claim_ids),
-        idea_vs_market=_llm_axis(_FIT_PROMPT, combined, claim_ids),
+        founder=founder,
+        market=market_axis(events),
+        idea_vs_market=idea_vs_market_axis(events),
     )
+
+
+def rank_key(sr: ScreeningResult) -> tuple[float, float, float]:
+    """Explicit ranking POLICY for D's list: founder first, then fit, then market.
+
+    Lexicographic by design — this is a stated preference ordering, not a blended
+    score. Changing the policy means changing this tuple, in the open.
+    """
+    return (sr.founder.score, sr.idea_vs_market.score, sr.market.score)
