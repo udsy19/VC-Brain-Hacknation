@@ -1,0 +1,35 @@
+[project]
+name = "vc-brain"
+version = "0.1.0"
+description = "Finds founders others can't see, tests the ones with nothing to show, and argues with itself before spending money."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "supabase>=2.9",
+    "psycopg[binary]>=3.2",
+    "openai>=1.54",
+    "anthropic>=0.39",
+    "tavily-python>=0.5",
+    "pdfplumber>=0.11",
+    "networkx>=3.4",
+    "numpy>=2.1",
+    "scipy>=1.14",
+    "rapidfuzz>=3.10",
+    "unidecode>=1.3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.setuptools]
+packages = ["core", "schema", "memory", "sourcing", "intelligence", "api", "backtest"]
