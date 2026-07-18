@@ -13,14 +13,239 @@ founder re-enters the gate. That re-entry is the demo.
 
 from __future__ import annotations
 
-from uuid import UUID
+import json
+import hashlib
+from collections.abc import Callable
+from datetime import datetime
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from schema.events import Challenge, Event
+from core import llm
+from schema.events import Challenge, Event, EventKind, Source, utcnow
+
+Judge = Callable[..., str | dict]
+
+_SYSTEM = (
+    "Design a 60–90 minute technical micro-challenge from the supplied claim. "
+    "It must contain one genuine ambiguity and one subtly flawed constraint."
+)
+_PROMPT = (
+    "Return JSON with prompt, central_claim, ambiguous_requirement, and "
+    "planted_bad_constraint. Each value must be a nonempty string. Do not add facts."
+)
 
 
-def generate(company_id: UUID) -> Challenge:
-    raise NotImplementedError("C: H8-12")
+def _claim_text(event: Event) -> str:
+    value = event.payload.get("claim") or event.evidence_span or ""
+    return str(value).strip()
+
+
+def _fallback(
+    company_id: UUID,
+    issued_at: datetime,
+    central_claim: str = "Claim not available",
+    source_claim: Event | None = None,
+) -> Challenge:
+    challenge = Challenge(
+        company_id=company_id,
+        prompt="Provide a small reproducible artifact and document the choices you made.",
+        central_claim=central_claim,
+        ambiguous_requirement="Choose an appropriate success measure and state your assumption.",
+        planted_bad_constraint="Use a fixed limit even if measurement shows it is unsuitable.",
+        issued_at=issued_at,
+    )
+    _persist_challenge(challenge, source_claim)
+    return challenge
+
+
+def _persist_challenge(challenge: Challenge, source_claim: Event | None) -> None:
+    from memory import store
+
+    store.append(
+        Event(
+            entity_id=source_claim.entity_id if source_claim is not None else None,
+            company_id=challenge.company_id,
+            kind=EventKind.PROOF_CHALLENGE_ISSUED,
+            source=Source.PROOF_PROTOCOL,
+            source_url=source_claim.source_url if source_claim is not None else None,
+            observed_at=challenge.issued_at,
+            payload={
+                "challenge_id": str(challenge.challenge_id),
+                "prompt": challenge.prompt,
+                "central_claim": challenge.central_claim,
+                "ambiguous_requirement": challenge.ambiguous_requirement,
+                "planted_bad_constraint": challenge.planted_bad_constraint,
+                "source_claim_id": str(source_claim.event_id) if source_claim is not None else None,
+            },
+            evidence_span=source_claim.evidence_span if source_claim is not None else None,
+            confidence=source_claim.confidence if source_claim is not None else 0.5,
+        )
+    )
+
+
+def generate(company_id: UUID, judge: Judge = llm.complete) -> Challenge:
+    """Create a claim-specific challenge; deck text is always untrusted data."""
+    from memory import store
+
+    issued_at = utcnow()
+    claims = store.events(company_id=company_id, kind=EventKind.DECK_CLAIM, as_of=issued_at)
+    claims = [claim for claim in claims if not claim.integrity_flags and _claim_text(claim)]
+    if not claims:
+        return _fallback(company_id, issued_at)
+    claim = max(claims, key=lambda event: (event.confidence, event.observed_at))
+    central_claim = _claim_text(claim)
+    try:
+        raw = judge(
+            _PROMPT,
+            system=_SYSTEM,
+            tier="deep",
+            untrusted=json.dumps({"central_claim": central_claim}),
+            json_mode=True,
+        )
+        data = raw if isinstance(raw, dict) else json.loads(raw)
+        keys = ("prompt", "central_claim", "ambiguous_requirement", "planted_bad_constraint")
+        if not isinstance(data, dict) or not all(
+            isinstance(data.get(key), str) and data[key].strip() for key in keys
+        ):
+            raise ValueError("malformed challenge")
+        challenge = Challenge(
+            company_id=company_id,
+            prompt=data["prompt"].strip(),
+            central_claim=central_claim,
+            ambiguous_requirement=data["ambiguous_requirement"].strip(),
+            planted_bad_constraint=data["planted_bad_constraint"].strip(),
+            issued_at=issued_at,
+        )
+        _persist_challenge(challenge, claim)
+        return challenge
+    except Exception:
+        return _fallback(company_id, issued_at, central_claim, claim)
+
+
+def _completed_at(trace: dict) -> datetime:
+    value = trace.get("completed_at")
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise ValueError("trace.completed_at is required")
+    if parsed.tzinfo is None:
+        raise ValueError("trace.completed_at must be timezone-aware")
+    return parsed
+
+
+def _trace_events(
+    trace: dict, issued_at: datetime, completed_at: datetime
+) -> list[tuple[str, datetime]]:
+    raw_events = trace.get("events")
+    if not isinstance(raw_events, list) or not raw_events:
+        raise ValueError("trace.events is required")
+    parsed = []
+    for item in raw_events:
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            raise ValueError("malformed trace event")
+        timestamp = _completed_at({"completed_at": item.get("at")})
+        if timestamp < issued_at or timestamp > completed_at:
+            raise ValueError("trace event is outside the challenge window")
+        parsed.append((item["type"], timestamp))
+    return sorted(parsed, key=lambda item: item[1])
+
+
+def _issued_event(challenge_id: UUID, as_of: datetime) -> Event:
+    from memory import store
+
+    matches = [
+        event
+        for event in store.events(kind=EventKind.PROOF_CHALLENGE_ISSUED, as_of=as_of)
+        if event.payload.get("challenge_id") == str(challenge_id)
+        and event.source == Source.PROOF_PROTOCOL
+        and event.company_id is not None
+        and not event.integrity_flags
+    ]
+    if len(matches) != 1:
+        raise ValueError("challenge issuance receipt is missing or ambiguous")
+    return matches[0]
 
 
 def grade(challenge_id: UUID, artifact: str, trace: dict) -> list[Event]:
-    raise NotImplementedError("C: H8-12")
+    """Turn a submitted artifact and behavioral trace into two low-noise observations."""
+    now = utcnow()
+    issued = _issued_event(challenge_id, now)
+    if trace.get("company_id") and UUID(str(trace["company_id"])) != issued.company_id:
+        raise ValueError("trace company does not match challenge")
+    if trace.get("entity_id") and UUID(str(trace["entity_id"])) != issued.entity_id:
+        raise ValueError("trace entity does not match challenge")
+    if issued.company_id is None:
+        raise ValueError("issued challenge has no company")
+    company_id = issued.company_id
+    entity_id = issued.entity_id
+    completed_at = _completed_at(trace)
+    if completed_at < issued.observed_at or completed_at > now:
+        raise ValueError("trace completion time is outside the issued challenge window")
+    trace_events = _trace_events(trace, issued.observed_at, completed_at)
+    source_url = str(trace["source_url"]) if trace.get("source_url") else None
+    test_results = trace.get("test_results")
+    if not isinstance(test_results, dict):
+        raise ValueError("trace.test_results is required")
+    passed, total = test_results.get("passed"), test_results.get("total")
+    valid_counts = (
+        all(isinstance(value, int) and not isinstance(value, bool) for value in (passed, total))
+        and 0 <= passed <= total
+    )
+    works = bool(valid_counts and total > 0 and passed == total)
+    sound = test_results.get("static_checks_passed") is True
+    event_types = [event_type for event_type, _ in trace_events]
+    challenged = "constraint_challenged" in event_types
+    clarified = "clarifying_question" in event_types
+    handled_ambiguity = clarified or "assumption_stated" in event_types
+    commit_times = [timestamp for event_type, timestamp in trace_events if event_type == "commit"]
+    iterations = len(commit_times)
+    first_commit = (
+        (commit_times[0] - issued.observed_at).total_seconds() / 60 if commit_times else None
+    )
+    latency_profile = [
+        (right - left).total_seconds() / 60 for left, right in zip(commit_times, commit_times[1:])
+    ]
+    behavior_receipt = json.dumps(trace.get("events"), sort_keys=True)
+    submission_digest = hashlib.sha256(
+        json.dumps({"artifact": artifact, "trace": trace}, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+    artifact_event = Event(
+        event_id=uuid5(NAMESPACE_URL, f"proof-artifact:{challenge_id}:{submission_digest}"),
+        entity_id=entity_id,
+        company_id=company_id,
+        kind=EventKind.PROOF_ARTIFACT,
+        source=Source.PROOF_PROTOCOL,
+        source_url=source_url,
+        observed_at=completed_at,
+        payload={
+            "challenge_id": str(challenge_id),
+            "artifact": artifact,
+            "works": works,
+            "sound": sound,
+            "handled_ambiguity": handled_ambiguity,
+        },
+        evidence_span=artifact[:240] or "Artifact submitted without text",
+        confidence=0.9,
+    )
+    behavior_event = Event(
+        event_id=uuid5(NAMESPACE_URL, f"proof-behavior:{challenge_id}:{submission_digest}"),
+        entity_id=entity_id,
+        company_id=company_id,
+        kind=EventKind.PROOF_BEHAVIOR,
+        source=Source.PROOF_PROTOCOL,
+        source_url=source_url,
+        observed_at=completed_at,
+        payload={
+            "challenge_id": str(challenge_id),
+            "challenged_bad_constraint": challenged,
+            "asked_clarifying": clarified,
+            "iteration_count": iterations,
+            "time_to_first_commit_min": first_commit,
+            "latency_profile": latency_profile,
+        },
+        evidence_span=behavior_receipt[:240],
+        confidence=0.95,
+    )
+    return [artifact_event, behavior_event]
