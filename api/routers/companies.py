@@ -12,6 +12,7 @@ from api.routers.deps import (
     as_uuid,
     degrade,
     find_seed_event,
+    company_uuid,
     fixture_key,
     founder_entity_ids,
     pick,
@@ -57,7 +58,7 @@ def get_company(company_id: str, as_of: datetime | None = None) -> dict:
     # Overlay the live score so the detail page shows what the filter actually
     # computed rather than a number frozen into the fixture.
     cutoff = resolve_as_of(as_of)
-    cid = as_uuid(company_id) or as_uuid(detail.get("company_id"))
+    cid = company_uuid(company_id) or as_uuid(detail.get("company_id"))
     if cid:
         detail["company_id"] = str(cid)
         try:
@@ -82,7 +83,7 @@ def _detail_from_store(company_id: str, slug: str) -> dict | None:
     """A detail page assembled from the event log, for companies without a fixture."""
     from memory import store
 
-    cid = as_uuid(company_id)
+    cid = company_uuid(company_id)
     if cid is None:
         return None
     row = store.get_company(cid)

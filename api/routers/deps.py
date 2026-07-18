@@ -66,6 +66,28 @@ def fixture_key(company_id: str) -> str:
     return _slug_by_name().get(name, company_id)
 
 
+def company_uuid(company_id: str) -> UUID | None:
+    """Accept either a UUID or a fixture slug and return the store UUID.
+
+    The ranked list hands the client slugs as `id`, so every link the UI builds
+    arrives here as a slug. Resolving only UUIDs 404s the entire navigation.
+    """
+    cid = as_uuid(company_id)
+    if cid is not None:
+        return cid
+
+    name = {slug: n for n, slug in _slug_by_name().items()}.get(company_id)
+    if not name:
+        return None
+
+    from memory import store
+
+    for row in store.all_companies():
+        if row.get("name") == name:
+            return as_uuid(row.get("company_id"))
+    return None
+
+
 @lru_cache(maxsize=1)
 def prior_company_names() -> frozenset[str]:
     """Companies a serial founder ran BEFORE the current one — history, not pipeline."""

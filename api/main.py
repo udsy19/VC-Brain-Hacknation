@@ -129,6 +129,13 @@ def _ranked_row(row: dict, as_of: datetime) -> dict:
         "axes": axes,
         "flag_count": len(seeded.get("flags") or []),
         "as_of": as_of.isoformat(),
+        # Beyond the client's CompanySummary contract — TypeScript ignores extra
+        # fields, and /query filters on these. Dropping them silently made every
+        # "unverified"/sector query return nothing.
+        "flags": seeded.get("flags") or [],
+        "unverified_claims": seeded.get("unverified_claims") or 0,
+        "sector_key": seeded.get("sector") or "",
+        "archetype_no": archetype_no,
     }
 
 

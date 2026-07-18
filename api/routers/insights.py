@@ -83,6 +83,13 @@ def _parse_filter(q: str) -> dict:
 
 
 def _trend_value(c: dict) -> float | None:
+    # The founder axis is where trend actually lives now. Checked first: a row can
+    # still carry a flat top-level `momentum`, and reading that instead made every
+    # "rising trend" query return nothing while six companies were plainly rising.
+    axis = (c.get("axes") or {}).get("founder") or {}
+    if isinstance(axis.get("trend"), (int, float)) and not isinstance(axis.get("trend"), bool):
+        return float(axis["trend"])
+
     t = pick(c, "trend", "trend_value", "momentum")
     if isinstance(t, (int, float)) and not isinstance(t, bool):
         return float(t)
@@ -152,13 +159,51 @@ def _matches(c: dict, f: dict) -> bool:
 def compound_query(q: str, as_of: datetime | None = None) -> dict:
     """NL compound query over the ranked list. The model only translates — the filter
     itself runs in plain Python, so the result set is inspectable and reproducible."""
-    companies = seed_or("companies", {}).get("companies", [])
+    from api.main import list_companies
+
+    # Filter the LIVE ranked list, not the seed file. Querying a different set than
+    # the one on screen returns ids the page cannot resolve, and the client is left
+    # waiting on a result it can never render.
+    try:
+        companies = list_companies(as_of)
+    except Exception:  # noqa: BLE001
+        companies = seed_or("companies", {}).get("companies", [])
+
     f = _parse_filter(q)
     results = [c for c in companies if _matches(c, f)]
     limit = f.get("limit")
     if isinstance(limit, int) and limit > 0:
         results = results[:limit]
-    return {"q": q, "filter": f, "count": len(results), "results": results}
+
+    # `company_ids` + `parsed` is the client's contract (lib/types.ts QueryResult).
+    # Returning a different shape makes the client silently fall back to a local
+    # interpreter that only knows fixture ids — which is what hung the button.
+    return {
+        "q": q,
+        "parsed": _describe_filter(f),
+        "company_ids": [c.get("id") for c in results if c.get("id")],
+        "count": len(results),
+        "filter": f,
+        "results": results,
+    }
+
+
+def _describe_filter(f: dict) -> str:
+    """Plain-English readback of what the query was understood to mean."""
+    parts = []
+    if f.get("sectors"):
+        parts.append(f"sector in {', '.join(f['sectors'])}")
+    if f.get("trend"):
+        parts.append(f"{f['trend']} trend")
+    if f.get("min_score") is not None:
+        parts.append(f"founder score >= {f['min_score']}")
+    if f.get("verification"):
+        parts.append(f"{f['verification']} claims")
+    if f.get("gate"):
+        parts.append(f"gate = {f['gate']}")
+    if f.get("limit"):
+        parts.append(f"top {f['limit']}")
+    return " · ".join(parts) if parts else "no filters recognised — showing everything"
 
 
 @router.get("/backtest")
