@@ -183,7 +183,27 @@ def _fixture_row(slug: str | None) -> dict | None:
     return None
 
 
+RANK_POLICY_ID = "min_axis_with_momentum_tiebreak"
+
+
 def _rank_key(row: dict) -> tuple:
-    """Gate, then founder trend, then founder level. Stated, not averaged."""
-    founder = (row.get("axes") or {}).get("founder") or {}
-    return (-(founder.get("trend") or 0.0), -(founder.get("score") or 0.0))
+    """Rank by the WEAKEST of the three axes, then momentum. Never a blend.
+
+    This is the policy `thesis.json` and `companies.json` both declare, and it is the
+    one the no-blended-score design actually rests on: a company is only as investable
+    as its weakest axis, and taking the minimum preserves that while an average would
+    let a strong founder paper over a dead market.
+
+    The previous implementation ranked on founder momentum alone — market and
+    idea-vs-market were never consulted, so a fast-rising weak founder outranked a
+    strong steady one and two published policy descriptions were both wrong.
+    """
+    axes = row.get("axes") or {}
+    scores = [
+        a.get("score")
+        for a in (axes.get(k) for k in ("founder", "market", "idea_vs_market"))
+        if isinstance(a, dict) and isinstance(a.get("score"), (int, float))
+    ]
+    weakest = min(scores) if scores else 0.0
+    momentum = (axes.get("founder") or {}).get("trend") or 0.0
+    return (-weakest, -momentum)
