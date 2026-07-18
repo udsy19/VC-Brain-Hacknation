@@ -646,9 +646,17 @@ def evaluate(
     fired = [row["id"] for row in flag_rows if row["applicable"] and row["fired"]]
     anchor = max(event.observed_at for event in scoped)
     company_ids = {event.company_id for event in scoped if event.company_id is not None}
-    if len(company_ids) > 1:
-        return per_rule
-    company_id = next(iter(company_ids), None)
+    # A rollup describes the FOUNDER, not a company, so spanning several companies is
+    # not a reason to withhold it — it is the serial-founder case, and suppressing the
+    # rollup there froze the score at the moment a founder started their second
+    # company. Type 3 exists to show the founder score PERSISTING across companies;
+    # the guard did precisely the opposite, and silently: the events kept accruing
+    # while the filter simply stopped receiving observations.
+    #
+    # When the evidence spans more than one company the rollup is stamped with no
+    # company_id, because attributing one company's reading to another would be the
+    # actual error the guard was reaching for.
+    company_id = next(iter(company_ids), None) if len(company_ids) == 1 else None
     self_consistency = sum(event.confidence for event in per_rule) / max(len(per_rule), 1)
     source_evidence_ids = sorted(
         {
