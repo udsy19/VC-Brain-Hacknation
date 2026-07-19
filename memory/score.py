@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -30,6 +32,19 @@ OBSERVATION_KINDS = tuple(_OBSERVATION_KINDS)
 
 # A's source weighting remains the baseline. C's proof-kind multiplier makes
 # verified behavioral evidence materially less noisy without rewarding raw volume.
+#
+# WHAT THIS TABLE IS, AND WHAT IT IS NOT. Read as "code is trustworthy and prose is
+# not" it is indefensible: that is true of a company whose product is code and false
+# everywhere else, and it would mean the only channel a non-technical founder has is
+# the noisiest one BY CONSTRUCTION, with no route to improvement however much
+# independent confirmation arrives. The defensible reading, and the one these numbers
+# actually track, is TIMESTAMP AUTHORITY AND THIRD-PARTY OBSERVABILITY: GitHub and HN
+# carry server-assigned times the subject cannot set, arXiv carries a v1 submission
+# date, a deck carries whatever the founder typed this morning. Nothing in that
+# argument mentions code.
+#
+# The missing axis was CORROBORATION, and it is supplied below rather than by
+# re-tuning these constants. See `_corroboration_multiplier`.
 _SOURCE_PENALTY = {
     Source.PROOF_PROTOCOL: 0.15,
     Source.VALIDATOR: 0.6,
@@ -171,7 +186,56 @@ def _verdict_entries(payload: dict) -> list[dict]:
     )
 
 
+# --- Request-scoped memoization -------------------------------------------------
+#
+# Both functions below are pure in (args, store contents), and both were being
+# recomputed many times per API request over an unchanged store:
+#
+#   * `contradicted_claim_ids` scans EVERY validation event in the corpus and is called
+#     once per company by `build_observations`. That is O(companies x corpus) — the term
+#     that turns a linear endpoint quadratic as the corpus grows.
+#   * `founder` runs the whole Kalman filter, and `GET /companies` triggers it TWICE for
+#     every company: once directly, and once more inside `intelligence.gate.evaluate`.
+#
+# The cache is deliberately NOT a module-level lru_cache. A global cache keyed on
+# (entity, as_of) goes stale the moment anything appends to the store under the same
+# cutoff — which is exactly what tests and the ingest path do — and a scorer that
+# silently returns a pre-append answer is a much worse bug than a slow endpoint. So the
+# cache exists only inside an explicit `scoring_cache()` block, where the caller is
+# asserting the store does not change for the duration. Outside one, behaviour is
+# byte-for-byte what it was before.
+_CACHE: ContextVar[dict | None] = ContextVar("score_cache", default=None)
+
+
+@contextmanager
+def scoring_cache():
+    """Memoize pure scoring reads for the duration of one read-only request.
+
+    Nests safely: an inner block reuses the outer cache rather than shadowing it, so a
+    handler that wraps a helper which also wraps does not lose the outer hits.
+    """
+    if _CACHE.get() is not None:
+        yield
+        return
+    token = _CACHE.set({})
+    try:
+        yield
+    finally:
+        _CACHE.reset(token)
+
+
 def contradicted_claim_ids(as_of: datetime) -> set[UUID]:
+    cache = _CACHE.get()
+    key = ("contradicted_claims", as_of)
+    if cache is not None and key in cache:
+        return cache[key]
+    out = _contradicted_claim_ids(as_of)
+    if cache is not None:
+        cache[key] = out
+    return out
+
+
+def _contradicted_claim_ids(as_of: datetime) -> set[UUID]:
     out: set[UUID] = set()
     for event in store.events(as_of=as_of, kind=EventKind.VALIDATION_RESULT):
         for entry in _verdict_entries(event.payload):
@@ -237,9 +301,45 @@ def _derive_y(payload: dict) -> float | None:
     return None
 
 
+# --- Corroboration, the axis the source table was missing ------------------------
+#
+# PENALISE SELF-PUBLISHED, REWARD INDEPENDENTLY CORROBORATED — orthogonally to
+# whether the artifact is code. `intelligence/flags._corroboration_reading` counts
+# how many channels stand behind a reading that are neither self-attested (the deck,
+# a MANUAL note) nor self-published (a domain the founder controls, per
+# `core.search.SELF_PUBLISHED_HINTS`), and this prices that count.
+#
+# The curve is the one `data/traits.json` already argues for and is concave for the
+# same reason: one channel is a claim, two are a claim plus a witness, three are a
+# pattern, and the third witness adds less than the second. It multiplies OBSERVATION
+# NOISE only. It cannot move y_t, so corroboration widens or narrows the band without
+# ever inventing capability — the same separation the trait layer maintains.
+#
+# NEUTRAL BY DEFAULT AND DELIBERATELY SO: an observation whose payload carries no
+# corroboration reading multiplies by 1.0. Nothing that predates this change moves.
+_CORROBORATION_MULTIPLIER = {0: 1.25, 1: 1.0, 2: 0.85}
+_CORROBORATION_FLOOR = 0.75  # three or more independent witnesses
+
+
+def _corroboration_multiplier(payload: dict) -> float:
+    """Noise multiplier from the number of independent witnesses, or 1.0 if unstated."""
+    channels = payload.get("independent_channels")
+    if not isinstance(channels, int) or isinstance(channels, bool) or channels < 0:
+        return 1.0
+    if payload.get("self_published_only") is True:
+        # Everything we hold is the founder describing themselves. That is not a
+        # finding about their quality — it is a statement that nobody else has said
+        # anything yet, and the band should show it.
+        return _CORROBORATION_MULTIPLIER[0]
+    return _CORROBORATION_MULTIPLIER.get(channels, _CORROBORATION_FLOOR)
+
+
 def _source_penalty(event: Event, payload: dict) -> float:
     value = payload.get("source_penalty", _SOURCE_PENALTY.get(event.source, 1.0))
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 1.0
+    base = (
+        float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 1.0
+    )
+    return base * _corroboration_multiplier(payload)
 
 
 def _kind_noise(event: Event) -> float:
@@ -315,14 +415,86 @@ def _apply_proof_calibration(
     return calibrated
 
 
+def _contradicted_events_for(entity_id: UUID, as_of: datetime) -> set[UUID]:
+    """`queries.contradicted_event_ids`, but ONE corpus-wide pair of queries per request.
+
+    The per-entity version issues two kind-filtered queries every time it is called,
+    and it is called once per founder. Against a remote database that is two network
+    round trips per company for a pair of event kinds that are RARE — the corpus
+    currently holds zero validation results, so both queries usually return nothing
+    and cost a round trip anyway. Profiling `GET /companies` at 60 companies put 7.0s
+    of 7.8s inside psycopg's wait, across 327 queries; this pair was 120 of them.
+
+    Filtering a corpus-wide fetch by entity_id in Python is exactly equivalent to
+    asking the database to filter per entity, so the returned set is unchanged. Only
+    valid inside `scoring_cache()`, where the store is asserted not to change;
+    outside one it falls straight through to the per-entity query.
+    """
+    cache = _CACHE.get()
+    if cache is None:
+        return queries.contradicted_event_ids(entity_id, as_of)
+
+    key = ("contradiction_index", as_of)
+    index = cache.get(key)
+    if index is None:
+        index = {}
+        backend = store.get_store()
+        for kind in (EventKind.CONTRADICTION, EventKind.VALIDATION_RESULT):
+            for event in backend.events(as_of=as_of, kind=kind):
+                if event.entity_id is None:
+                    continue
+                if kind is EventKind.VALIDATION_RESULT and (
+                    str(event.payload.get("status", "")).lower() != "contradicted"
+                ):
+                    continue
+                index.setdefault(event.entity_id, set()).update(queries._targets(event))
+        cache[key] = index
+    return index.get(entity_id, set())
+
+
+def _observation_events_for(entity_id: UUID, as_of: datetime) -> list[Event]:
+    """This entity's SCORABLE events — the only kinds `build_observations` reads.
+
+    The unindexed form fetches every event for the entity and discards all but three
+    kinds, once per founder. Inside a request that is one round trip per company to
+    retrieve rows that are then mostly thrown away. Indexed, it is three kind-scoped
+    queries for the whole corpus, grouped once.
+
+    Ordering mirrors the backend's own `order by observed_at, ingested_at, event_id`
+    exactly. `build_observations` re-sorts afterwards and everything before that sort is
+    order-independent, so this is belt-and-braces — but an index that silently reorders
+    equal-timestamped events would be an unpleasant thing to discover later, and
+    matching the query costs nothing.
+    """
+    cache = _CACHE.get()
+    if cache is None:
+        return [
+            e
+            for e in store.get_store().events(entity_id=entity_id, as_of=as_of)
+            if e.kind in _OBSERVATION_KINDS
+        ]
+
+    key = ("observation_index", as_of)
+    index = cache.get(key)
+    if index is None:
+        index = {}
+        backend = store.get_store()
+        for kind in _OBSERVATION_KINDS:
+            for event in backend.events(as_of=as_of, kind=kind):
+                if event.entity_id is not None:
+                    index.setdefault(event.entity_id, []).append(event)
+        for events in index.values():
+            events.sort(key=lambda e: (e.observed_at, e.ingested_at, str(e.event_id)))
+        cache[key] = index
+    return index.get(entity_id, [])
+
+
 def build_observations(entity_id: UUID, as_of: datetime) -> list[SchemaObservation]:
-    contradicted_events = queries.contradicted_event_ids(entity_id, as_of)
+    contradicted_events = _contradicted_events_for(entity_id, as_of)
     contradicted_claims = contradicted_claim_ids(as_of)
     observations_for_entity: list[SchemaObservation] = []
     proof_event_ids: set[UUID] = set()
-    for event in store.get_store().events(entity_id=entity_id, as_of=as_of):
-        if event.kind not in _OBSERVATION_KINDS:
-            continue
+    for event in _observation_events_for(entity_id, as_of):
         if event.kind in _PROOF_KINDS:
             proof_event_ids.add(event.event_id)
         if (
@@ -418,6 +590,50 @@ def _F(dt_years: float) -> np.ndarray:
     return np.array([[1.0, (1.0 - decay) / _DECAY_RATE], [0.0, decay]])
 
 
+def _cap_covariance(covariance: np.ndarray) -> np.ndarray:
+    """Cap each variance at the no-evidence prior WITHOUT destroying positive-definiteness.
+
+    THIS IS THE FIX FOR THE DIVERGENCE, AND THE OLD CODE HERE WAS THE CAUSE OF IT.
+    The cap itself is sound and is kept: however long the silence, we can never be more
+    uncertain about a founder than we were before we had ever heard of them. What was
+    wrong was writing the diagonal entries independently --
+
+        covariance[0, 0] = min(covariance[0, 0], P0[0])
+        covariance[1, 1] = min(covariance[1, 1], P0[1])
+
+    -- which shrinks a variance while leaving the covariance term that references it
+    untouched, and a 2x2 with a large off-diagonal relative to its diagonals is not a
+    covariance matrix at all. Measured on the real corpus, `peerd` propagates across a
+    7.25-year gap to
+
+        P = [[1.465898, 0.262807], [0.262807, 0.072498]]   det = +3.72e-02  (valid)
+
+    and the clamp rewrites P00 to 0.25, giving det = 0.25*0.072498 - 0.262807**2 =
+    -5.09e-02 with eigenvalues (0.4386, -0.1161). The posterior is already indefinite
+    BEFORE the measurement update runs; `(I - K H) P` then feeds the negative eigenvalue
+    into P11 and every later step inherits it. That is the whole mechanism -- it is not
+    dt sign, not the velocity coupling, and not asymmetry.
+
+    The correct way to impose a per-variance ceiling is a symmetric diagonal rescaling,
+    P -> D P D with D = diag(sqrt(min(1, P0[i] / P_ii))). That is a CONGRUENCE transform,
+    so it preserves positive semi-definiteness exactly, and it reproduces the intended
+    ceiling exactly (the new P_ii is min(P_ii, P0[i])). The off-diagonal shrinks by the
+    same factors, which is the correct reading: capping how uncertain we are about the
+    level must also cap how much of that uncertainty can be attributed to the velocity.
+    On the peerd step above it yields det = +6.35e-03 with the diagonal at the ceiling.
+
+    This is a numerical correction, not a mask. Nothing is clamped to a floor and no
+    absolute value is taken; a genuinely invalid posterior would still reach the
+    divergence guard, which stays exactly as it is.
+    """
+    variances = np.diag(covariance)
+    ceilings = np.array([P0[0], P0[1]])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratios = np.where(variances > ceilings, ceilings / variances, 1.0)
+    scale = np.sqrt(np.clip(ratios, 0.0, 1.0))
+    return (covariance * scale[:, None]) * scale[None, :]
+
+
 def _propagate(
     x: np.ndarray, covariance: np.ndarray, dt_years: float, q: float
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -425,15 +641,13 @@ def _propagate(
 
     The level integrates a decaying velocity rather than a constant one, so a short
     burst of improvement cannot compound into an unbounded forecast. Covariance is
-    capped at the no-evidence prior: however long the silence, we can never be more
-    uncertain about a founder than we were before we had ever heard of them.
+    capped at the no-evidence prior by ``_cap_covariance``, which does so without
+    breaking the positive-definiteness the filter depends on.
     """
     transition = _F(dt_years)
     x = transition @ x
     covariance = transition @ covariance @ transition.T + _Q(dt_years, q)
-    covariance[0, 0] = min(covariance[0, 0], P0[0])
-    covariance[1, 1] = min(covariance[1, 1], P0[1])
-    return x, covariance
+    return x, _cap_covariance(covariance)
 
 
 def _Q(dt_years: float, q: float) -> np.ndarray:
@@ -488,11 +702,61 @@ def founder(entity_id: UUID, as_of: datetime) -> FounderScore:
     * ``trend`` -- velocity of ``mu`` in capability units per YEAR. Use
       ``trend_per_days`` to render it over any other horizon.
     """
+    cache = _CACHE.get()
+    key = ("founder", entity_id, as_of, _active_model())
+    if cache is not None and key in cache:
+        return cache[key]
+    result = _founder_uncached(entity_id, as_of)
+    if cache is not None:
+        cache[key] = result
+    return result
+
+
+def _founder_uncached(entity_id: UUID, as_of: datetime) -> FounderScore:
     if _active_model() == "beta_binomial":
         from memory import score_fallback
 
         return score_fallback.founder(entity_id, as_of)
     state, covariance, contributing = _run_filter(entity_id, as_of)
+
+    # A DIVERGED FILTER IS NOT A CONFIDENT ZERO.
+    #
+    # `covariance` is a posterior covariance, so its diagonal cannot be negative. The
+    # update below uses the textbook `P = (I - K H) P` form, which is not guaranteed to
+    # stay positive-definite in floating point, and it loses that property when a long
+    # propagation makes P large before an update. Sourcing real founders exposed this
+    # immediately: the GitHub scanner stamps a profile with the ACCOUNT CREATION date,
+    # so someone who opened an account in 2013 and shipped in 2026 hands the filter a
+    # 13-year gap between two observations. 8 of 130 founders diverged that way.
+    #
+    # What made it dangerous was the reporting, not the divergence. `band` was
+    # `sqrt(max(cov, 0.0))` and `mu` was `clip(state, 0, 1)`, so a state of -23.6 with a
+    # variance of -3.6 was published as mu=0.000, band=0.000 — a founder whose four
+    # observations averaged 0.36 presented as a CONFIDENT ZERO, the most damaging output
+    # this system can produce about a real person. `max(..., 0.0)` turned "the numbers
+    # are invalid" into "we are perfectly certain", which is the absence-vs-weakness
+    # failure in its purest form.
+    #
+    # So an invalid posterior returns the UNINFORMATIVE PRIOR: we ran the filter and it
+    # did not converge, therefore we do not know. That is the honest reading, and it is
+    # strictly safer than the clip. This cannot re-tune anything, because a posterior
+    # that was already valid is returned unchanged.
+    diverged = (
+        not np.all(np.isfinite(state))
+        or not np.all(np.isfinite(covariance))
+        or covariance[0, 0] < 0.0
+        or covariance[1, 1] < 0.0
+    )
+    if diverged:
+        log.warning(
+            "score: filter diverged for %s (state=%s, var=%s) — returning the "
+            "uninformative prior rather than a confident zero",
+            entity_id,
+            state.tolist(),
+            [covariance[0, 0], covariance[1, 1]],
+        )
+        state, covariance = _X0.copy(), _P0.copy()
+
     return FounderScore(
         entity_id=entity_id,
         as_of=as_of,

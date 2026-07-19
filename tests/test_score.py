@@ -403,3 +403,92 @@ def test_fallback_honours_contradictions_and_empty_case(monkeypatch: pytest.Monk
     assert empty.model == "beta_binomial"
     assert empty.mu == pytest.approx(0.5)
     assert empty.contributing_event_ids == []
+
+
+# --- Regression: the covariance cap must not break positive-definiteness ---------
+#
+# Replayed from the REAL event sequence of the founder behind the sourced company
+# `peerd`, which is one of the 66 (of 118) real founders whose filter diverged the
+# moment live scraping replaced the hand-built corpus. The shape that does it is
+# ordinary for scraped evidence and absent from every constructed fixture: the GitHub
+# scanner stamps a profile with the ACCOUNT CREATION date, so the first observation
+# sits in 2019 and the rest arrive in 2026 -- a 7.25-year propagation -- followed by
+# two readings minutes apart on the same day.
+#
+# Across that gap the propagated covariance is [[1.4659, 0.2628], [0.2628, 0.0725]],
+# which is perfectly valid (det = +3.72e-02). The old cap overwrote P00 with the prior
+# 0.25 and left the off-diagonal alone, giving det = -5.09e-02 and an eigenvalue of
+# -0.116 BEFORE the measurement update had run. Every later step inherited it and the
+# founder scored the uninformative prior instead of the ~0.36 their readings support.
+_PEERD_SEQUENCE = [
+    # (observed_at, value, source_penalty) -- as produced by the live scrape.
+    (datetime(2019, 4, 1, tzinfo=timezone.utc), 0.200133, 1.2),
+    (datetime(2026, 7, 1, tzinfo=timezone.utc), 0.230721, 1.02),
+    (datetime(2026, 7, 19, 4, 32, 55, 529593, tzinfo=timezone.utc), 0.598819, 1.02),
+    (datetime(2026, 7, 19, 4, 45, 17, 454205, tzinfo=timezone.utc), 0.598819, 1.02),
+]
+
+
+def test_real_long_gap_history_keeps_the_covariance_positive_semidefinite() -> None:
+    """peerd's real sequence must score, and P must stay PSD at every single step."""
+    import numpy as np
+
+    entity_id = uuid4()
+    for observed_at, value, penalty in _PEERD_SEQUENCE:
+        store.append(
+            Event(
+                kind=EventKind.PROOF_ARTIFACT,
+                source=Source.WEB,
+                entity_id=entity_id,
+                observed_at=observed_at,
+                payload={"value": value, "source_penalty": penalty},
+            )
+        )
+    as_of = datetime(2026, 7, 20, tzinfo=timezone.utc)
+
+    # Step through the same propagate/update loop the filter runs and assert the
+    # posterior is a covariance matrix -- symmetric with no negative eigenvalue -- at
+    # every step, not merely non-negative on the diagonal at the end.
+    q, _ = score._params()
+    x, covariance = score._X0.copy(), score._P0.copy()
+    last = None
+    for observation in score.build_observations(entity_id, as_of):
+        if last is not None:
+            x, covariance = score._propagate(
+                x, covariance, score._dt_years(observation.observed_at, last), q
+            )
+            assert min(np.linalg.eigvalsh(covariance)) >= 0.0, "propagation broke PSD"
+            assert covariance[0, 0] <= score.P0[0] + 1e-12, "the prior ceiling must still hold"
+            assert covariance[1, 1] <= score.P0[1] + 1e-12, "the prior ceiling must still hold"
+        r = score._noise_for_schema(observation)
+        gain = (covariance @ score._H.T) / ((score._H @ covariance @ score._H.T).item() + r)
+        x = x + gain.flatten() * (observation.value - (score._H @ x).item())
+        covariance = (np.eye(2) - gain @ score._H) @ covariance
+        assert min(np.linalg.eigvalsh(covariance)) >= 0.0, "update broke PSD"
+        last = observation.observed_at
+
+    result = score.founder(entity_id, as_of)
+    # The divergence guard returns exactly the prior; a real score must not be it.
+    assert (result.mu, result.band) != (0.5, 0.5)
+    assert 0.0 < result.mu < 1.0
+    assert 0.0 < result.band < 0.5
+    assert len(result.contributing_event_ids) == len(_PEERD_SEQUENCE)
+
+
+def test_covariance_cap_preserves_definiteness_and_still_caps() -> None:
+    """The cap is a congruence transform: it holds the ceiling without breaking PSD."""
+    import numpy as np
+
+    propagated = np.array([[1.465898, 0.262807], [0.262807, 0.072498]])
+    assert np.linalg.det(propagated) > 0.0  # valid before the cap
+
+    capped = score._cap_covariance(propagated)
+    assert capped[0, 0] == pytest.approx(score.P0[0])  # ceiling applied exactly
+    assert capped[1, 1] == pytest.approx(propagated[1, 1])  # already under, untouched
+    assert capped[0, 1] == pytest.approx(capped[1, 0])  # still symmetric
+    assert min(np.linalg.eigvalsh(capped)) > 0.0  # still a covariance matrix
+
+    # A matrix already under both ceilings must pass through completely unchanged, so
+    # nothing that scored correctly before this change can move.
+    under = np.array([[0.04, 0.01], [0.01, 0.09]])
+    assert np.allclose(score._cap_covariance(under), under)
