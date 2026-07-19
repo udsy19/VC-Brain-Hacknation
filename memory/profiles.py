@@ -30,7 +30,7 @@ import io
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 from uuid import UUID, uuid4
 
 from memory import db
@@ -159,7 +159,7 @@ create table if not exists vc_decisions (
 create index if not exists idx_vc_decisions_profile on vc_decisions (profile_id);
 """
 
-_ensured: set[int] = set()
+_ensured: dict[int, Any] = {}
 
 
 def conn() -> Any:
@@ -171,11 +171,39 @@ def conn() -> Any:
     re-ensures against the new file.
     """
     c = db.connect()
-    if id(c) not in _ensured and db.backend() == db.SQLITE:
+    if _ensured.get(id(c)) is not c and db.backend() == db.SQLITE:
         c.executescript(SQLITE_SCHEMA)
         c.commit()
-        _ensured.add(id(c))
+        # Keyed by id() but holding the connection itself, because CPython reuses the
+        # id of a freed object: a bare set of ints would report "already ensured" for a
+        # brand-new connection that happened to land on a dead one's address, and the
+        # tables would silently not exist.
+        _ensured[id(c)] = c
     return c
+
+
+def write(sql: str, args: tuple | list = ()) -> None:
+    """Every INSERT/UPDATE/DELETE goes through here, because the two backends disagree
+    about transactions and only one of them is forgiving.
+
+    The Postgres wrapper is autocommit and its `commit()` is a documented no-op. Python's
+    sqlite3 is NOT: a bare `execute` opens a transaction that is only visible to the
+    connection that opened it, and is discarded when the process exits. Reads inside one
+    process therefore see their own uncommitted writes, which is exactly why this was
+    invisible to both the test suite and a single-process manual run — and why every
+    account would have disappeared the first time the server restarted.
+    """
+    c = conn()
+    c.execute(sql, args)
+    c.commit()
+
+
+def fetch(sql: str, args: tuple | list = ()) -> list[dict]:
+    """Every read goes through here, because the two backends disagree on row type:
+    SQLite hands back `sqlite3.Row` (indexable, but no `.get`) and the Postgres wrapper
+    hands back plain dicts. Normalising once means no call site has to know which, and
+    an optional column can be read with `.get()` on either."""
+    return [dict(row) for row in conn().execute(sql, args).fetchall()]
 
 
 def _now() -> datetime:
@@ -197,7 +225,7 @@ def create_user(email: str, password_hash: str) -> User:
     if get_user_by_email(email) is not None:
         raise ValueError("email already registered")
     user = User(user_id=uuid4(), email=email, created_at=_now())
-    conn().execute(
+    write(
         "insert into users (user_id, email, password_hash, created_at) values (?, ?, ?, ?)",
         (str(user.user_id), email, password_hash, _iso(user.created_at)),
     )
@@ -215,19 +243,19 @@ def _user_row(row: dict | None) -> User | None:
 
 
 def get_user_by_email(email: str) -> User | None:
-    rows = conn().execute("select * from users where email = ?", (email,)).fetchall()
+    rows = fetch("select * from users where email = ?", (email,))
     return _user_row(rows[0] if rows else None)
 
 
 def get_user(user_id: UUID) -> User | None:
-    rows = conn().execute("select * from users where user_id = ?", (str(user_id),)).fetchall()
+    rows = fetch("select * from users where user_id = ?", (str(user_id),))
     return _user_row(rows[0] if rows else None)
 
 
 def password_hash_for(email: str) -> str | None:
     """The ONLY read path for a hash. Isolated to one function so that grepping for
     where hashes leave the database returns exactly one answer."""
-    rows = conn().execute("select password_hash from users where email = ?", (email,)).fetchall()
+    rows = fetch("select password_hash from users where email = ?", (email,))
     return rows[0]["password_hash"] if rows else None
 
 
@@ -239,7 +267,7 @@ def password_hash_for(email: str) -> str | None:
 def create_session(user_id: UUID, token_hash: str, ttl: timedelta = SESSION_TTL) -> datetime:
     now = _now()
     expires = now + ttl
-    conn().execute(
+    write(
         "insert into sessions (session_id, token_hash, user_id, created_at, expires_at) "
         "values (?, ?, ?, ?, ?)",
         (str(uuid4()), token_hash, str(user_id), _iso(now), _iso(expires)),
@@ -250,7 +278,7 @@ def create_session(user_id: UUID, token_hash: str, ttl: timedelta = SESSION_TTL)
 def user_for_session(token_hash: str) -> User | None:
     """None for unknown OR expired. An expired session is indistinguishable from no
     session, which is what makes the unauthenticated fallback path uniform."""
-    rows = conn().execute("select * from sessions where token_hash = ?", (token_hash,)).fetchall()
+    rows = fetch("select * from sessions where token_hash = ?", (token_hash,))
     if not rows:
         return None
     row = rows[0]
@@ -261,11 +289,11 @@ def user_for_session(token_hash: str) -> User | None:
 
 
 def delete_session(token_hash: str) -> None:
-    conn().execute("delete from sessions where token_hash = ?", (token_hash,))
+    write("delete from sessions where token_hash = ?", (token_hash,))
 
 
 def purge_expired_sessions() -> None:
-    conn().execute("delete from sessions where expires_at <= ?", (_iso(_now()),))
+    write("delete from sessions where expires_at <= ?", (_iso(_now()),))
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +302,7 @@ def purge_expired_sessions() -> None:
 
 
 def lockout_remaining(email: str) -> timedelta | None:
-    rows = conn().execute("select * from login_attempts where email = ?", (email,)).fetchall()
+    rows = fetch("select * from login_attempts where email = ?", (email,))
     if not rows or not rows[0].get("locked_until"):
         return None
     remaining = db.from_iso(rows[0]["locked_until"]) - _now()
@@ -287,11 +315,10 @@ def record_login_failure(email: str) -> None:
     Keyed on email rather than IP: a conference network puts every attendee behind one
     address, so an IP-keyed limiter would lock the room out the moment one person
     fat-fingered a password."""
-    c = conn()
     now = _now()
-    rows = c.execute("select * from login_attempts where email = ?", (email,)).fetchall()
+    rows = fetch("select * from login_attempts where email = ?", (email,))
     if not rows:
-        c.execute(
+        write(
             "insert into login_attempts (email, failures, first_failure_at) values (?, ?, ?)",
             (email, 1, _iso(now)),
         )
@@ -302,7 +329,7 @@ def record_login_failure(email: str) -> None:
     failures = int(row["failures"]) + 1 if now - started <= FAILURE_WINDOW else 1
     started_at = started if now - started <= FAILURE_WINDOW else now
     locked = _iso(now + LOCKOUT) if failures >= MAX_LOGIN_FAILURES else None
-    c.execute(
+    write(
         "update login_attempts set failures = ?, first_failure_at = ?, locked_until = ? "
         "where email = ?",
         (failures, _iso(started_at), locked, email),
@@ -310,7 +337,7 @@ def record_login_failure(email: str) -> None:
 
 
 def clear_login_failures(email: str) -> None:
-    conn().execute("delete from login_attempts where email = ?", (email,))
+    write("delete from login_attempts where email = ?", (email,))
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +346,7 @@ def clear_login_failures(email: str) -> None:
 
 
 def _profile_row(user_id: UUID) -> dict | None:
-    rows = conn().execute(
-        "select * from vc_profiles where user_id = ?", (str(user_id),)
-    ).fetchall()
+    rows = fetch("select * from vc_profiles where user_id = ?", (str(user_id),))
     return rows[0] if rows else None
 
 
@@ -333,7 +358,7 @@ def ensure_profile(user_id: UUID) -> UUID:
         return UUID(str(row["profile_id"]))
     profile_id = uuid4()
     now = _iso(_now())
-    conn().execute(
+    write(
         "insert into vc_profiles (profile_id, user_id, fund_name, focus_sectors, "
         "stated_red_lines, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
         (str(profile_id), str(user_id), None, "[]", "[]", now, now),
@@ -364,7 +389,7 @@ def update_profile(
     sets.append("updated_at = ?")
     args.append(_iso(_now()))
     args.append(str(profile_id))
-    conn().execute(f"update vc_profiles set {', '.join(sets)} where profile_id = ?", args)
+    write(f"update vc_profiles set {', '.join(sets)} where profile_id = ?", args)
 
 
 def _json_list(value: Any) -> list[str]:
@@ -385,16 +410,15 @@ def save_survey(user_id: UUID, answers: Iterable[SurveyAnswer]) -> int:
     question keeps no row at all — absence is the honest record of "not answered".
     """
     profile_id = ensure_profile(user_id)
-    c = conn()
     stored = 0
     for answer in answers:
         if answer.question_id not in SURVEY_BY_ID:
             continue
-        c.execute(
+        write(
             "delete from vc_survey_answers where profile_id = ? and question_id = ?",
             (str(profile_id), answer.question_id),
         )
-        c.execute(
+        write(
             "insert into vc_survey_answers (profile_id, question_id, choice, answered_at) "
             "values (?, ?, ?, ?)",
             (str(profile_id), answer.question_id, str(answer.choice), _iso(_now())),
@@ -407,10 +431,10 @@ def get_survey(user_id: UUID) -> list[SurveyAnswer]:
     row = _profile_row(user_id)
     if not row:
         return []
-    rows = conn().execute(
+    rows = fetch(
         "select question_id, choice from vc_survey_answers where profile_id = ?",
         (str(row["profile_id"]),),
-    ).fetchall()
+    )
     return [
         SurveyAnswer(question_id=r["question_id"], choice=Choice(r["choice"]))
         for r in rows
@@ -422,12 +446,11 @@ def save_decisions(user_id: UUID, decisions: Iterable[PastDecision], *, replace:
     """`replace=True` swaps the whole history — a re-upload is a correction of the file,
     not an append, and appending would double every row on a second upload."""
     profile_id = ensure_profile(user_id)
-    c = conn()
     if replace:
-        c.execute("delete from vc_decisions where profile_id = ?", (str(profile_id),))
+        write("delete from vc_decisions where profile_id = ?", (str(profile_id),))
     n = 0
     for d in decisions:
-        c.execute(
+        write(
             "insert into vc_decisions (decision_id, profile_id, company, sector, stage, "
             "decision, decided_on, rationale, outcome, source_row, uploaded_at) "
             "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -453,10 +476,10 @@ def get_decisions(user_id: UUID) -> list[PastDecision]:
     row = _profile_row(user_id)
     if not row:
         return []
-    rows = conn().execute(
+    rows = fetch(
         "select * from vc_decisions where profile_id = ? order by source_row",
         (str(row["profile_id"]),),
-    ).fetchall()
+    )
     out = []
     for r in rows:
         decided = r.get("decided_on")
@@ -1212,8 +1235,16 @@ def _gap_stage(answers, decisions, findings, uncomputable, agreements) -> None:
                 decision_rows=sorted(d.source_row or 0 for d, _ in scored),
                 n=len(ids) + len(scored),
             ),
+            # Both sides discount the finding, and the weaker one governs. The revealed
+            # term was `len(scored) / len(scored)` — identically 1.0 — so a stage gap
+            # drawn from six investments claimed full confidence while the conviction
+            # and sector findings built on the SAME six rows correctly reported 0.3.
             confidence=round(
-                min(len(ids) / max(1, _capable("stage_lean")), len(scored) / max(1, len(scored))), 3
+                min(
+                    len(ids) / max(1, _capable("stage_lean")),
+                    len(scored) / DECISIONS_FOR_FULL_CONFIDENCE,
+                ),
+                3,
             ),
         )
     )

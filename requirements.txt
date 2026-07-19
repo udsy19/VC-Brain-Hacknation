@@ -9,6 +9,10 @@
 
 fastapi>=0.115
 pydantic>=2.9
+# Auth. argon2-cffi is ~1MB with its bindings and python-multipart is ~50KB, so neither
+# threatens the 250MB ceiling the trimming above exists to stay under.
+argon2-cffi>=25.1
+python-multipart>=0.0.32
 python-dotenv>=1.0
 httpx>=0.27
 psycopg[binary]>=3.2
@@ -19,5 +23,3 @@ networkx>=3.4
 numpy>=2.1
 rapidfuzz>=3.10
 unidecode>=1.3
-argon2-cffi>=25.1
-python-multipart>=0.0.32

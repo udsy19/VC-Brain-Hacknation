@@ -3,22 +3,35 @@
 /**
  * Route `/company/[id]` — the workhorse.
  *
- * Three axes side by side · moving score line with a tightening band · trace
- * drill-down to a quoted span · per-claim trust · integrity flags · Proof Protocol ·
- * memo | dissent split with the server-side recommendation lock.
- *
  * There is no combined score on this page and no component here can produce one.
  *
- * INFORMATION ARCHITECTURE
- * This page carries seven sections and judges arrive looking for a specific one, so it
- * has a sticky section bar that lists them in DEMO ORDER and marks the section you are
- * currently in. The trace drill-down is the section judges click, so "Three axes" is
- * first and its own row states what clicking an axis does. Nothing here requires
- * scrolling blindly to discover.
+ * INFORMATION ARCHITECTURE — ordered by what would change the decision
+ *
+ * The page used to be ordered by what the system happens to know, which put the
+ * recommendation last and the score-history replay third. It is now ordered by what a
+ * reader would act on:
+ *
+ *   1. The recommendation, the cheque, and the BINDING CONSTRAINT on its confidence —
+ *      which component is holding it back, named, rather than a bare number.
+ *   2. The three axes, WEAKEST FIRST. Min-axis is the actual ranking policy, so the
+ *      weakest axis governs the outcome; having it read third was backwards.
+ *   3. Contradicted and unverified claims — the things that undermine the above.
+ *   4. The load-bearing claim from the dissent (inside the split view).
+ *   5. Evidence, grouped by what it evidences (inside the trace drawer).
+ *   6. Provenance and integrity notes.
+ *
+ * Anything that could not complete the sentence "this matters because…" was cut or put
+ * behind a disclosure. The score-history replay is the clearest example: it is a
+ * beautiful artefact of the method, not a decision input, so it now sits in a collapsed
+ * disclosure at the bottom rather than occupying the second screen.
+ *
+ * Three things here are load-bearing and must not be "simplified" away: the three axes
+ * are never averaged, the recommendation stays locked until the dissent has been served
+ * (server-enforced — this page must not appear to work around it), and the trace bottoms
+ * out in a quoted span with its source URL.
  *
  * Getting back is always one action: the breadcrumb, the ← control in the section bar,
- * or Escape. Prev/next walk the ranked order the list handed over, so stepping through
- * the pipeline never requires returning to it.
+ * or Escape. Prev/next walk the ranked order the list handed over.
  */
 
 import { useRouter } from "next/navigation";
@@ -27,7 +40,9 @@ import { getCompanies, getCompany, getScoreHistory, type Result } from "@/lib/ap
 import type { AxisKey, CompanyDetail, CompanySummary, ScoreHistory } from "@/lib/types";
 import { AXIS_KEYS } from "@/lib/types";
 import { readListState, writeListState } from "@/lib/listState";
+import { useMemoDissent } from "@/lib/useMemoDissent";
 import AxisCard from "@/components/AxisCard";
+import DecisionPanel from "@/components/DecisionPanel";
 import ClaimsTable from "@/components/ClaimsTable";
 import IntegrityPanel from "@/components/IntegrityPanel";
 import MemoDissent from "@/components/MemoDissent";
@@ -174,6 +189,9 @@ function CompanyView({ id }: { id: string }) {
   const [traceAxis, setTraceAxis] = useState<AxisKey | null>(null);
   const [neighbours, setNeighbours] = useState<CompanySummary[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  // One memo/dissent load, shared by the decision panel and the split view, so the
+  // server-side lock has exactly one representation on the page.
+  const memoDissent = useMemoDissent(id);
 
   const backToPipeline = useCallback(() => {
     writeListState({ selected: id });
@@ -289,16 +307,54 @@ function CompanyView({ id }: { id: string }) {
   const c = company.data;
   const criticalFlags = c.integrity.filter((f) => f.severity === "critical");
 
-  // Sections in demo order. A section only appears when it has something in it, EXCEPT
-  // the ones the demo always visits — those render an explicit "nothing recorded" so a
-  // sparse record reads as sparse rather than as a page that failed to load.
+  /**
+   * Axes sorted WEAKEST FIRST — the min-axis is the ranking policy, so the weakest axis
+   * is the one governing the outcome and it reads first.
+   *
+   * An UNSCORED axis sorts to the very front: "we have no evidence at all here" is a
+   * stronger constraint on the decision than any low number, and burying it behind two
+   * scored axes would understate it.
+   */
+  const axesWeakestFirst = [...AXIS_KEYS].sort((a, b) => {
+    const sa = c.axes[a].score;
+    const sb = c.axes[b].score;
+    if (sa === null && sb === null) return 0;
+    if (sa === null) return -1;
+    if (sb === null) return 1;
+    return sa - sb;
+  });
+  const governingAxis = axesWeakestFirst[0];
+
+  const unresolvedClaims = c.claims.filter(
+    (cl) => cl.status === "contradicted" || cl.status === "unverifiable",
+  ).length;
+
+  // Sections in DECISION order, not demo order. A section only appears when it has
+  // something in it, EXCEPT the ones that must read as deliberately empty — those render
+  // an explicit "nothing recorded" so a sparse record reads as sparse, not as broken.
   const sections: Section[] = [
+    {
+      id: "decision",
+      label: "Recommendation",
+      hint: "The decision, the cheque, and the one component capping the confidence.",
+    },
     {
       id: "axes",
       label: "Three axes",
-      hint: "Click any axis to open the trace: contributing events → quoted source span → original URL.",
+      hint: "Ordered weakest first — the weakest axis is what the ranking keys on. Click any axis to trace it to a quoted source span.",
     },
-    { id: "history", label: "Score history", hint: "The band narrows as observations land." },
+    {
+      id: "claims",
+      label: unresolvedClaims
+        ? `Claims (${unresolvedClaims} unresolved)`
+        : "Per-claim trust",
+      hint: "Contradicted and unverified first. One status per claim; no company-level trust number exists.",
+    },
+    {
+      id: "memo",
+      label: "Memo | Dissent",
+      hint: "The load-bearing claim leads the dissent. The recommendation stays locked until the dissent is opened — enforced by the server.",
+    },
     ...(c.proof_protocol
       ? [
           {
@@ -313,16 +369,10 @@ function CompanyView({ id }: { id: string }) {
           {
             id: "integrity",
             label: `Integrity (${c.integrity.length})`,
-            hint: "Everything the sanitizer caught, including what it did about it.",
+            hint: "Provenance notes and everything the sanitizer caught — surfaced, not buried.",
           },
         ]
       : []),
-    { id: "claims", label: "Per-claim trust", hint: "One status per claim. No company-level trust number exists." },
-    {
-      id: "memo",
-      label: "Memo | Dissent",
-      hint: "The recommendation stays locked until the dissent is opened — enforced by the server.",
-    },
   ];
 
   return (
@@ -339,10 +389,14 @@ function CompanyView({ id }: { id: string }) {
           <SourceChip source={company.source} note={company.note} />
         </div>
       }
+      /*
+        Header metadata is cut to what a reader would actually use to place the company:
+        sector, stage, geo, and the as-of date that scopes every number below it. The
+        archetype label was a system-internal classification that no decision turns on —
+        it could not complete "this matters because…", so it is gone.
+      */
       meta={
         <>
-          {c.archetype}
-          <br />
           {c.sector} · {c.stage} · {c.geo}
           <br />
           AS_OF {c.as_of.slice(0, 10)}
@@ -402,72 +456,49 @@ function CompanyView({ id }: { id: string }) {
           </div>
         )}
 
-        {/* ------------------------------------------------------- the three axes */}
+        {/* ----------------------------------- 1 · the recommendation and its blocker */}
+        <DecisionPanel state={memoDissent} gate={c.gate} onFocusAxis={setTraceAxis} />
+
+        {/* ------------------------------------------- 2 · three axes, weakest first */}
         <section id="axes" className="scroll-mt-32">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
-            <h2 className="meta text-[color:var(--figure)]">Three-axis screen</h2>
+            <h2 className="meta text-[color:var(--figure)]">
+              Three-axis screen — weakest first
+            </h2>
             <p className="caption max-w-none text-[color:var(--muted)]">
               Click any axis to trace it down to the quoted source span.
             </p>
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
-            {AXIS_KEYS.map((k) => (
-              <AxisCard key={k} axisKey={k} axis={c.axes[k]} onOpenTrace={setTraceAxis} />
+            {axesWeakestFirst.map((k) => (
+              <AxisCard
+                key={k}
+                axisKey={k}
+                axis={c.axes[k]}
+                onOpenTrace={setTraceAxis}
+                governing={k === governingAxis}
+              />
             ))}
           </div>
           <p className="mt-3 max-w-4xl text-[13px] leading-relaxed text-[color:var(--muted)]">
-            These three numbers are never averaged, weighted, or combined. A company can be
-            strong on market and disqualified on founder, and the page will keep showing you
-            both — which is the whole point.
+            Ordered weakest first, because the weakest axis is the one the ranking keys
+            on. These three numbers are never averaged, weighted, or combined — a company
+            can be strong on market and disqualified on founder, and the page keeps
+            showing you both.
           </p>
         </section>
 
-        {/* --------------------------------------------------- moving line + band */}
-        <Panel
-          id="history"
-          title="Score history — the band tightens as evidence lands"
-          subtitle="Local-linear-trend posterior per axis, replayed in observation order."
-          className="scroll-mt-32"
-          right={history ? <SourceChip source={history.source} note={history.note} /> : undefined}
-        >
-          {!history ? (
-            <Loading label="score history" />
-          ) : AXIS_KEYS.some((k) => history.data[k].length) ? (
-            <ScoreLine history={history.data} />
-          ) : (
-            <EmptyState title="No score history recorded for this company.">
-              The posterior is only replayable where observations were logged over time.
-              This record has none, so there is no line to draw — the axes above are a
-              single reading rather than a trajectory.
-            </EmptyState>
-          )}
-        </Panel>
-
-        {/* ----------------------------------------------------- Proof Protocol */}
-        {c.proof_protocol && (
-          <section id="proof" className="scroll-mt-32">
-            <ProofProtocolPanel companyId={c.id} initial={c.proof_protocol} />
-          </section>
-        )}
-
-        {/* --------------------------------------------------------- integrity */}
-        {c.integrity.length > 0 && (
-          <Panel
-            id="integrity"
-            title="Integrity flags"
-            subtitle="Everything the sanitizer caught, including what it did about it."
-            className="scroll-mt-32"
-          >
-            <IntegrityPanel flags={c.integrity} />
-          </Panel>
-        )}
-
-        {/* ------------------------------------------------------ per-claim trust */}
+        {/* ------------------------------ 3 · contradicted and unverified claims */}
         <Panel
           id="claims"
-          title="Per-claim trust"
-          subtitle="One status per claim. No company-level trust number exists."
+          title={
+            unresolvedClaims
+              ? `Per-claim trust — ${unresolvedClaims} unresolved`
+              : "Per-claim trust"
+          }
+          subtitle="Contradicted and unverified first. One status per claim; no company-level trust number exists."
           className="scroll-mt-32"
+          emphasis={unresolvedClaims > 0}
         >
           {c.claims.length ? (
             <ClaimsTable claims={c.claims} />
@@ -480,11 +511,61 @@ function CompanyView({ id }: { id: string }) {
           )}
         </Panel>
 
-        {/* ---------------------------------------------------- memo | dissent */}
+        {/* ------------------------- 4 · the load-bearing claim, inside the split view */}
         <section id="memo" className="scroll-mt-32">
           <h2 className="meta mb-3 text-[color:var(--figure)]">Memo | Dissent</h2>
-          <MemoDissent companyId={id} />
+          <MemoDissent state={memoDissent} />
         </section>
+
+        {/* ----------------------------------------------------- Proof Protocol */}
+        {c.proof_protocol && (
+          <section id="proof" className="scroll-mt-32">
+            <ProofProtocolPanel companyId={c.id} initial={c.proof_protocol} />
+          </section>
+        )}
+
+        {/* --------------------------------- 6 · provenance and integrity notes */}
+        {c.integrity.length > 0 && (
+          <Panel
+            id="integrity"
+            title="Integrity and provenance"
+            subtitle="Everything the sanitizer caught, including what it did about it. A transliterated name is a provenance note — that we can see it is the point."
+            className="scroll-mt-32"
+          >
+            <IntegrityPanel flags={c.integrity} />
+          </Panel>
+        )}
+
+        {/*
+          Score history is the method made visible, not a decision input: nothing about a
+          replayed posterior changes what you would do about this company today. It keeps
+          its place in the record but behind a disclosure, which is what stopped it from
+          occupying the second screen ahead of the claims.
+        */}
+        <details id="history" className="scroll-mt-32 border border-[color:var(--rule)]">
+          <summary className="meta cursor-pointer px-5 py-3 text-[color:var(--accent)]">
+            Score history — how the band tightened as evidence landed
+          </summary>
+          <div className="border-t border-[color:var(--rule)] p-5">
+            <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
+              <p className="caption max-w-none text-[color:var(--muted)]">
+                Local-linear-trend posterior per axis, replayed in observation order.
+              </p>
+              {history && <SourceChip source={history.source} note={history.note} />}
+            </div>
+            {!history ? (
+              <Loading label="score history" />
+            ) : AXIS_KEYS.some((k) => history.data[k].length) ? (
+              <ScoreLine history={history.data} />
+            ) : (
+              <EmptyState title="No score history recorded for this company.">
+                The posterior is only replayable where observations were logged over time.
+                This record has none, so there is no line to draw — the axes above are a
+                single reading rather than a trajectory.
+              </EmptyState>
+            )}
+          </div>
+        </details>
 
         <TraceDrawer company={c} axisKey={traceAxis} onClose={() => setTraceAxis(null)} />
       </div>

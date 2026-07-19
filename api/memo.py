@@ -291,9 +291,12 @@ CHECK_SIZE_FALLBACK = {"currency": "USD", "min": 250_000, "target": 750_000, "ma
 def _check_size() -> tuple[dict, str]:
     """The thesis check_size range, read straight from the seed fixture.
 
-    Read directly rather than through the thesis-config layer that is being wired
-    separately, so this does not depend on unlanded work. Swapping to that loader later
-    is a one-line change here.
+    FOLLOW-UP, deliberately not done here: `core/thesis.py::check_size()` landed while
+    this was being written and normalizes the same field, so there are now two readers of
+    one config. This one stays direct because that module is another workstream's and was
+    still moving; collapsing them is a one-line delegation once it settles. The behaviours
+    differ on one input — a bare number, which that loader reads as a target and derives a
+    range around, and this one reports as malformed rather than inventing a min and a max.
     """
     from api.routers.deps import seed_or
 

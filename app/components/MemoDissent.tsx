@@ -9,10 +9,9 @@
  * honestly rather than hiding the section until it arrives.
  */
 
-import { useEffect, useState } from "react";
-import { getDissent, getMemo, TIMEOUT, type Result } from "@/lib/api";
-import type { Dissent, Memo } from "@/lib/types";
-import { AXIS_LABEL } from "@/lib/types";
+import { TIMEOUT } from "@/lib/api";
+import { AXIS_KEYS, AXIS_LABEL, type AxisKey } from "@/lib/types";
+import type { MemoDissentState } from "@/lib/useMemoDissent";
 import { Busy, EmptyState, ErrorNote, Loading } from "./ui";
 
 /** Renders [e-xx-01] citations as monospace chips so every claim visibly carries its id. */
@@ -36,55 +35,98 @@ function Cited({ text }: { text: string }) {
   );
 }
 
-export default function MemoDissent({ companyId }: { companyId: string }) {
-  const [memo, setMemo] = useState<Result<Memo> | null>(null);
-  const [memoMissing, setMemoMissing] = useState(false);
-  const [dissent, setDissent] = useState<Result<Dissent> | null>(null);
-  const [dissentOpen, setDissentOpen] = useState(false);
-  const [loadingDissent, setLoadingDissent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+/**
+ * Bull/bear spread per axis.
+ *
+ * Split out because the failure it fixes was a rendering one. The wire carries spreads
+ * on 0..1; this component printed `v.toFixed(0)` against a bar sized `v * 2`%, so three
+ * genuine disagreements of 0.50, 0.30 and 0.40 rendered as "0", "0", "0" behind three
+ * hairline bars — which reads as "the bull and the bear agree perfectly", the exact
+ * opposite of the truth. The adapter now normalises to score units, and an axis the
+ * payload does not carry is OMITTED rather than defaulted, so "not computed" and "no
+ * spread" no longer share a rendering.
+ */
+function AxisSpreads({ spreads }: { spreads: Partial<Record<AxisKey, number>> }) {
+  const missing = AXIS_KEYS.filter((k) => spreads[k] === undefined);
 
-  // Mount-time load, always locked. The parent keys this component by company id, so
-  // a different company remounts it and the lock resets with it — there is no path
-  // where a previously-unlocked recommendation carries over to another company.
-  useEffect(() => {
-    let live = true;
-    (async () => {
-      const m = await getMemo(companyId, false);
-      if (!live) return;
-      // null means neither the backend nor a fixture has a memo for THIS company.
-      // Another company's memo is never shown in its place.
-      if (m) setMemo(m);
-      else setMemoMissing(true);
-    })();
-    return () => {
-      live = false;
-    };
-  }, [companyId]);
+  if (missing.length === AXIS_KEYS.length) {
+    return (
+      <div>
+        <h4 className="meta text-[color:var(--muted)]">Bull/bear spread per axis</h4>
+        <p className="mt-1.5 border border-dashed border-[color:var(--figure)] px-3 py-2 text-[13px] leading-[1.55] text-[color:var(--muted)]">
+          No spread was computed for this company. That is not the same as the memo and
+          the dissent agreeing — it means the comparison was not run, so nothing is drawn
+          here rather than three empty bars implying consensus.
+        </p>
+      </div>
+    );
+  }
 
-  const openDissent = async () => {
-    setLoadingDissent(true);
-    setError(null);
-    try {
-      const d = await getDissent(companyId);
-      if (!d) {
-        setError(
-          "No dissent exists for this company, so the recommendation cannot be unlocked. The lock is the server's, and this page does not work around it.",
-        );
-        return;
-      }
-      setDissent(d);
-      setDissentOpen(true);
-      // Re-request the memo with dissent_viewed=true. The server decides, not us.
-      const m = await getMemo(companyId, true);
-      if (m) setMemo(m);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      // Always — a failed dissent must hand the button back, not grey it out forever.
-      setLoadingDissent(false);
-    }
-  };
+  return (
+    <div>
+      <h4 className="meta text-[color:var(--muted)]">Bull/bear spread per axis</h4>
+      <p className="mt-1 mb-2 text-[13px] leading-[1.5] text-[color:var(--muted)]">
+        How far apart the memo and the dissent land on each axis, in score units. A wide
+        spread is uncertainty, and it is reported per axis — never pooled.
+      </p>
+      <ul className="space-y-2">
+        {AXIS_KEYS.map((k) => {
+          const v = spreads[k];
+          return (
+            <li key={k} className="flex items-center gap-3">
+              <span className="w-36 shrink-0 text-[13px] text-[color:var(--muted)]">
+                {AXIS_LABEL[k]}
+              </span>
+              {v === undefined ? (
+                <>
+                  <span className="hatch h-2.5 flex-1 bg-[color:var(--ink-09)]" />
+                  <span className="mono w-20 shrink-0 text-right text-[12px] text-[color:var(--muted)]">
+                    not run
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="h-2.5 flex-1 bg-[color:var(--ink-09)]">
+                    <span
+                      className="block h-2.5"
+                      style={{
+                        // Score units against the full 0–100 track, floored at a visible
+                        // sliver so a genuinely tiny spread still reads as measured.
+                        width: `${Math.max(1.5, Math.min(100, v))}%`,
+                        background: "var(--figure)",
+                        opacity: 0.75,
+                      }}
+                    />
+                  </span>
+                  <span className="mono w-20 shrink-0 text-right text-[14px] font-medium text-[color:var(--figure)]">
+                    {v.toFixed(1)}
+                  </span>
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The memo | dissent split view.
+ *
+ * State is owned by `useMemoDissent` and passed in, because the recommendation panel at
+ * the top of the page renders the same server lock. One fetch, one lock, two views.
+ */
+export default function MemoDissent({ state }: { state: MemoDissentState }) {
+  const {
+    memo,
+    memoMissing,
+    dissent,
+    dissentOpen,
+    loading: loadingDissent,
+    error,
+    openDissent,
+  } = state;
 
   if (memoMissing) {
     return (
@@ -108,7 +150,6 @@ export default function MemoDissent({ companyId }: { companyId: string }) {
   }
 
   const m = memo.data;
-  const locked = m.recommendation === null;
 
   return (
     <div className="space-y-3">
@@ -163,70 +204,11 @@ export default function MemoDissent({ companyId }: { companyId: string }) {
               </div>
             )}
 
-            {/* ------------------------------------------- the locked recommendation */}
-            <div>
-              <h4 className="meta text-[color:var(--muted)]">
-                Recommendation
-              </h4>
-              {locked ? (
-                <div
-                  className="mt-1.5 border-2 border-dashed px-5 py-6 text-center"
-                  style={{
-                    borderColor: "var(--figure)",
-                    background: "var(--ink-09)",
-                  }}
-                >
-                  <div className="text-[28px] leading-none" aria-hidden>
-                    🔒
-                  </div>
-                  <p className="mt-2 text-[17px] font-medium text-[color:var(--figure)]">
-                    Recommendation locked
-                  </p>
-                  <p className="mx-auto mt-1.5 max-w-md text-[14px] leading-[1.55] text-[color:var(--muted)]">
-                    The server is withholding it:{" "}
-                    <em>
-                      “{m.recommendation_locked_reason ?? "open the dissent view first"}”
-                    </em>
-                    . You cannot read the recommendation before you have read the case
-                    against it.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={openDissent}
-                    disabled={loadingDissent}
-                    title={
-                      loadingDissent
-                        ? "Fetching the dissent, then re-requesting the memo with the lock released"
-                        : "Opens the dissent and asks the server to release the recommendation"
-                    }
-                    className="mt-4 border px-5 py-2.5 text-[15px] font-medium tracking-wide text-[color:var(--figure)] transition disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--accent)",
-                      background: "color-mix(in oklab, var(--accent) 14%, transparent)",
-                    }}
-                  >
-                    {loadingDissent ? "Opening…" : "Open the dissent to unlock →"}
-                  </button>
-                  {loadingDissent && (
-                    <Busy
-                      className="mt-3"
-                      budgetMs={TIMEOUT.read * 2}
-                      label="Reading the dissent, then re-requesting the memo unlocked"
-                    />
-                  )}
-                </div>
-              ) : (
-                <p
-                  className="mt-1.5 border-l-4 px-4 py-3 text-[16px] leading-[1.55] font-medium text-[color:var(--figure)]"
-                  style={{
-                    borderColor: "var(--accent)",
-                    background: "color-mix(in oklab, var(--accent) 9%, transparent)",
-                  }}
-                >
-                  <Cited text={m.recommendation!} />
-                </p>
-              )}
-            </div>
+            {/*
+              The recommendation is NOT repeated here. It leads the page in the decision
+              panel, where it is the first thing read — restating it at the bottom of the
+              memo column would give the same sentence two homes and neither authority.
+            */}
           </div>
         </section>
 
@@ -272,83 +254,54 @@ export default function MemoDissent({ companyId }: { companyId: string }) {
             </div>
           ) : dissent ? (
             <div className="space-y-5 px-5 py-4">
-              <div>
-                <h4 className="meta text-[color:var(--muted)]">
-                  Bear case
+              {/*
+                The load-bearing claim leads the column. It is the single thing that
+                kills the thesis if it is false, which makes it the highest-value
+                sentence on this half of the page — it was previously third, below prose
+                a reader has to get through first.
+              */}
+              <div
+                className="border-2 px-4 py-3"
+                style={{
+                  borderColor: "var(--accent)",
+                  background: "color-mix(in oklab, var(--accent) 9%, transparent)",
+                }}
+              >
+                <h4 className="meta" style={{ color: "var(--accent)" }}>
+                  ◂ Load-bearing claim — if this is false, the thesis fails
                 </h4>
+                <p className="mt-1.5 text-[16px] leading-[1.5] font-medium text-[color:var(--figure)]">
+                  {dissent.data.load_bearing_claim}
+                </p>
+                <p className="mt-1.5 text-[13px] text-[color:var(--muted)]">
+                  Named, not hedged. This is the one thing to go and check.
+                </p>
+              </div>
+
+              <div>
+                <h4 className="meta text-[color:var(--muted)]">Bear case</h4>
                 <p className="mt-1.5 text-[15px] leading-[1.55] text-[color:var(--muted)]">
                   {dissent.data.bear_case}
                 </p>
               </div>
 
-              <div>
-                <h4 className="meta text-[color:var(--muted)]">
-                  Weakest evidence
-                </h4>
-                <ul className="mt-2 space-y-2">
-                  {dissent.data.weakest_evidence.map((w, i) => (
-                    <li
-                      key={i}
-                      className="border border-[color:var(--rule)] bg-[color:var(--ink-09)] px-3 py-2 text-[14px] leading-snug text-[color:var(--muted)]"
-                    >
-                      {w}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              {dissent.data.weakest_evidence.length > 0 && (
+                <div>
+                  <h4 className="meta text-[color:var(--muted)]">Weakest evidence</h4>
+                  <ul className="mt-2 space-y-2">
+                    {dissent.data.weakest_evidence.map((w, i) => (
+                      <li
+                        key={i}
+                        className="border border-[color:var(--rule)] bg-[color:var(--ink-09)] px-3 py-2 text-[14px] leading-snug text-[color:var(--muted)]"
+                      >
+                        {w}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-              <div
-                className="border px-4 py-3"
-                style={{
-                  borderColor: "var(--figure)",
-                  background: "var(--ink-09)",
-                }}
-              >
-                <h4
-                  className="meta"
-                  style={{ color: "var(--figure)" }}
-                >
-                  Load-bearing claim
-                </h4>
-                <p className="mt-1.5 text-[15px] leading-[1.55] font-medium text-[color:var(--figure)]">
-                  {dissent.data.load_bearing_claim}
-                </p>
-                <p className="mt-1.5 text-[13px] text-[color:var(--muted)]">
-                  If this is false, the thesis fails. Named, not hedged.
-                </p>
-              </div>
-
-              <div>
-                <h4 className="meta text-[color:var(--muted)]">
-                  Bull/bear spread per axis
-                </h4>
-                <p className="mt-1 mb-2 text-[13px] text-[color:var(--muted)]">
-                  How far apart the memo and the dissent land on each axis. A wide spread is
-                  uncertainty, and it is reported per axis — never pooled.
-                </p>
-                <ul className="space-y-2">
-                  {Object.entries(dissent.data.axis_spreads).map(([k, v]) => (
-                    <li key={k} className="flex items-center gap-3">
-                      <span className="w-36 shrink-0 text-[13px] text-[color:var(--muted)]">
-                        {AXIS_LABEL[k as keyof typeof AXIS_LABEL] ?? k}
-                      </span>
-                      <span className="h-2.5 flex-1 bg-[color:var(--ink-09)]">
-                        <span
-                          className="block h-2.5 rounded-full"
-                          style={{
-                            width: `${Math.min(100, (v ?? 0) * 2)}%`,
-                            background: "var(--figure)",
-                            opacity: 0.75,
-                          }}
-                        />
-                      </span>
-                      <span className="mono w-12 shrink-0 text-right text-[14px] font-medium text-[color:var(--figure)]">
-                        {v?.toFixed(0)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              <AxisSpreads spreads={dissent.data.axis_spreads} />
             </div>
           ) : (
             <div className="p-5">

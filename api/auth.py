@@ -108,7 +108,7 @@ def _secure_cookies() -> bool:
     and a Secure cookie would simply never be stored."""
     if os.getenv("VCBRAIN_INSECURE_COOKIES") == "1":
         return False
-    return not (os.getenv("VERCEL_ENV", "") in ("", "development"))
+    return os.getenv("VERCEL_ENV", "") not in ("", "development")
 
 
 # ---------------------------------------------------------------------------

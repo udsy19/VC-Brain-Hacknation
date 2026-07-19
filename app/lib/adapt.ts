@@ -27,16 +27,21 @@ import type {
   ClaimVerdict,
   CompanyDetail,
   CompanySummary,
+  ConfidenceComponent,
+  Dissent,
+  EventTrace,
   EvidenceEvent,
   GateOutcome,
   IntegrityFlag,
   Memo,
   ProofProtocol,
   QueryResult,
+  Recommendation,
   ScoreHistory,
   ScorePoint,
+  UnderlyingEvidence,
 } from "./types";
-import { AXIS_KEYS } from "./types";
+import { AXIS_KEYS, TREND_UNIT_DIRECTION } from "./types";
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -94,6 +99,10 @@ function toAxis(raw: unknown, factor: number): Axis {
   const score = num(raw.score);
   const band = num(raw.band);
   const trend = num(raw.trend);
+  const trendUnit = str(raw.trend_unit) ?? undefined;
+  // A DIRECTION is a sign, not a score, so the 0..1 -> 0..100 rescale must not touch it.
+  // Without this guard a market axis trending "up" (1.0) renders as "+100.0".
+  const trendFactor = trendUnit === TREND_UNIT_DIRECTION ? 1 : factor;
 
   // Evidence ids arrive either as a flat id list (canonical) or as inline evidence
   // objects carrying the span itself (live). Both are accepted; the ids are what the
@@ -108,10 +117,14 @@ function toAxis(raw: unknown, factor: number): Axis {
   return {
     score: score === null ? null : score * factor,
     band: band === null ? null : band * factor,
-    trend: trend === null ? null : trend * factor,
+    trend: trend === null ? null : trend * trendFactor,
     confidence: num(raw.confidence) ?? 0,
     evidence_event_ids: ids.length ? ids : inline,
     reason: str(raw.reason) ?? undefined,
+    // Only a literal `false` means seeded. An absent flag is unknown, not "not live",
+    // and marking an unknown axis as seeded would be its own false claim.
+    live: typeof raw.live === "boolean" ? raw.live : undefined,
+    trend_unit: trendUnit,
   };
 }
 
@@ -496,6 +509,24 @@ const MEMO_SECTIONS = ["thesis", "founder", "market", "risks", "recommendation"]
 const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
+ * The unlocked memo carries `recommendation` as an OBJECT (`{summary, claims,
+ * computed_verdict}`), not a string. Reading it with `str()` therefore returned null on
+ * every live response, and null is precisely the sentinel the UI reads as "still locked"
+ * — so opening the dissent released the server's lock and the page kept showing the
+ * padlock anyway. Prefer the computed verdict, which is the sentence that states the
+ * decision, and fall back to the summary.
+ */
+function recommendationText(raw: unknown): string | null {
+  const direct = str(raw);
+  if (direct) return direct;
+  if (!isObj(raw)) return null;
+  const verdict = str(raw.computed_verdict);
+  const summary = str(raw.summary);
+  if (verdict && summary && !summary.startsWith(verdict)) return `${verdict} — ${summary}`;
+  return verdict ?? summary;
+}
+
+/**
  * The canonical memo is a list of sections; the live memo is an object keyed by section
  * name, each with a `summary` and its own `claims`. Both produce the same five required
  * headings in the same order.
@@ -529,8 +560,9 @@ export function toMemo(raw: unknown, companyId: string): Memo | null {
       gaps: arr(raw.gaps)
         .map((g) => str(g))
         .filter((g): g is string => g !== null),
-      recommendation: str(raw.recommendation),
+      recommendation: recommendationText(raw.recommendation),
       recommendation_locked_reason: str(raw.recommendation_locked_reason) ?? undefined,
+      recommendation_detail: toRecommendation(raw.investment_recommendation),
     };
   }
 
@@ -584,8 +616,187 @@ export function toMemo(raw: unknown, companyId: string): Memo | null {
     company_id: str(raw.company_id) ?? companyId,
     sections,
     gaps: [...gaps, ...ambiguities],
-    recommendation: str(raw.recommendation),
-    recommendation_locked_reason: str(raw.recommendation_locked_reason) ?? undefined,
+    recommendation: recommendationText(raw.recommendation),
+    recommendation_locked_reason:
+      str(raw.recommendation_locked_reason) ?? str(raw.decision_locked_reason) ?? undefined,
+    recommendation_detail: toRecommendation(raw.investment_recommendation),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Recommendation
+// ---------------------------------------------------------------------------
+
+/**
+ * `investment_recommendation` off the unlocked memo.
+ *
+ * Returns null rather than a stub when the block is absent, because a recommendation
+ * panel with no decision in it is worse than no panel: the whole section exists to
+ * answer "what should I do and what is stopping me".
+ */
+export function toRecommendation(raw: unknown): Recommendation | null {
+  if (!isObj(raw)) return null;
+  const decision = str(raw.decision);
+  const gate = str(raw.gate);
+  // Without a decision AND without a gate there is nothing to lead the page with.
+  if (!decision && !gate) return null;
+
+  const gateOr = (v: string | null, fb: GateOutcome): GateOutcome =>
+    v && (GATES as string[]).includes(v) ? (v as GateOutcome) : fb;
+
+  const cs = raw.check_size;
+  const conf = raw.confidence;
+
+  const governing = isObj(raw.governing_axis) ? raw.governing_axis : null;
+  const gName = governing ? str(governing.name) : null;
+  const gScore = governing ? num(governing.score) : null;
+
+  return {
+    decision: gateOr(decision, gateOr(gate, "no_call")),
+    // Null is "no cheque", which the reason string explains. It is NEVER zero.
+    amount_usd: num(raw.amount_usd),
+    currency: str(raw.currency) ?? "USD",
+    reason: str(raw.reason) ?? "No reason reported for this decision.",
+    check_size: isObj(cs)
+      ? {
+          currency: str(cs.currency) ?? "USD",
+          min: num(cs.min) ?? 0,
+          target: num(cs.target) ?? 0,
+          max: num(cs.max) ?? 0,
+        }
+      : null,
+    check_size_source: str(raw.check_size_source),
+    gate: gateOr(gate, gateOr(decision, "no_call")),
+    governing_axis:
+      gName && gScore !== null
+        ? // Governing score arrives on 0..1; the page speaks score units everywhere else.
+          { name: gName, score: Math.abs(gScore) <= 1 ? gScore * 100 : gScore }
+        : null,
+    confidence: isObj(conf)
+      ? {
+          value: num(conf.value) ?? 0,
+          unit: str(conf.unit) ?? "",
+          method: str(conf.method) ?? "",
+          binding_component: str(conf.binding_component),
+          components: arr(conf.components)
+            .map((c): ConfidenceComponent | null => {
+              if (!isObj(c)) return null;
+              const name = str(c.name);
+              if (!name) return null;
+              return {
+                name,
+                raw: num(c.raw),
+                unit: str(c.unit) ?? "",
+                support: num(c.support),
+                basis: str(c.basis) ?? "",
+              };
+            })
+            .filter((c): c is ConfidenceComponent => c !== null),
+        }
+      : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dissent
+// ---------------------------------------------------------------------------
+
+/**
+ * The anti-memo. The route nests it under `anti_memo` alongside the decision and the
+ * lock state, so both shapes are accepted.
+ *
+ * `axis_spreads` is the part that needed fixing. The wire carries 0..1; the page speaks
+ * score units. Rendering 0.499 with `toFixed(0)` printed "0" against a 1%-wide bar for
+ * every axis, which read as "bull and bear agree perfectly" — the exact opposite of a
+ * half-scale disagreement. Axes the payload does not carry are OMITTED here rather than
+ * defaulted to zero, so the component can tell "not computed" from "no spread".
+ */
+export function toDissent(raw: unknown): Dissent | null {
+  const src = isObj(raw) && isObj(raw.anti_memo) ? raw.anti_memo : raw;
+  if (!isObj(src)) return null;
+  const bear = str(src.bear_case);
+  if (!bear) return null;
+
+  const spreadsRaw = isObj(src.axis_spreads) ? src.axis_spreads : {};
+  // One scale decision for the whole map, as with the axes: mixing per-field guesses
+  // would mis-scale a genuine 1-out-of-100 spread.
+  const values = AXIS_KEYS.map((k) => num(spreadsRaw[k])).filter(
+    (v): v is number => v !== null,
+  );
+  const factor = values.length && values.every((v) => Math.abs(v) <= 1) ? 100 : 1;
+
+  const axis_spreads: Partial<Record<AxisKey, number>> = {};
+  for (const k of AXIS_KEYS) {
+    const v = num(spreadsRaw[k]);
+    if (v !== null) axis_spreads[k] = v * factor;
+  }
+
+  return {
+    company_id: str(src.company_id) ?? "",
+    bear_case: bear,
+    weakest_evidence: arr(src.weakest_evidence)
+      .map((w) => str(w))
+      .filter((w): w is string => w !== null),
+    load_bearing_claim:
+      str(src.load_bearing_claim) ?? "No load-bearing claim was named by the dissent.",
+    axis_spreads,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Event trace
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /companies/{id}/trace/{event_id}` — the bottom of the drill-down.
+ *
+ * This is the endpoint that makes the trace genuinely reach a commit span. The drawer
+ * previously read events out of the local company payload and never called it, which is
+ * why a rollup event looked like a dead end: its own span is a generated summary. Here
+ * the generated-ness is preserved (`span_is_generated`) along with the real receipts
+ * underneath it (`underlying_evidence`), so neither gets flattened into the other.
+ */
+export function toEventTrace(raw: unknown): EventTrace | null {
+  if (!isObj(raw)) return null;
+  const id = str(raw.event_id);
+  if (!id) return null;
+
+  const underlying: UnderlyingEvidence[] = arr(raw.underlying_evidence)
+    .map((u): UnderlyingEvidence | null => {
+      if (!isObj(u)) return null;
+      const uid = str(u.event_id);
+      if (!uid) return null;
+      return {
+        event_id: uid,
+        kind: str(u.kind) ?? "unreported",
+        source: str(u.source) ?? "unreported",
+        source_url: str(u.source_url),
+        quoted_span: str(u.quoted_span) ?? str(u.span),
+        observed_at: str(u.observed_at),
+      };
+    })
+    .filter((u): u is UnderlyingEvidence => u !== null);
+
+  const span = str(raw.quoted_span) ?? str(raw.evidence_span);
+
+  return {
+    event_id: id,
+    quoted_span: span,
+    // `has_span` is the server's own answer. Fall back to whether we actually got one
+    // rather than assuming true — the two disagreeing is exactly what we want visible.
+    has_span: typeof raw.has_span === "boolean" ? raw.has_span : span !== null,
+    span_is_generated: raw.span_is_generated === true,
+    underlying_evidence: underlying,
+    source_url: str(raw.source_url),
+    chain: arr(raw.chain)
+      .map((c) => {
+        if (!isObj(c)) return null;
+        const step = str(c.step);
+        if (!step) return null;
+        const d = c.detail;
+        return { step, detail: typeof d === "string" ? d : JSON.stringify(d) };
+      })
+      .filter((c): c is { step: string; detail: string } => c !== null),
   };
 }
 

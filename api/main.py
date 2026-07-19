@@ -12,7 +12,7 @@ from datetime import datetime
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import companies, insights
+from api.routers import auth, companies, insights, profile
 from api.routers.deps import degrade, pick, resolve_as_of, seed, seed_or
 
 app = FastAPI(title="VC Brain", version="0.1.0")
@@ -31,6 +31,10 @@ app.add_middleware(
 
 app.include_router(companies.router)
 app.include_router(insights.router)
+# Personalisation only. Everything above this line stays reachable without a session —
+# a broken login must degrade to the objective product, never to a blank page.
+app.include_router(auth.router)
+app.include_router(profile.router)
 
 
 @app.get("/health")
@@ -97,9 +101,22 @@ def put_thesis(update: dict = Body(...)) -> dict:
     import json as _json
 
     from api.routers.deps import seed_dir
-    current = seed("thesis")
+    # Read from DISK, not through the cached seed() helper. A cached copy predating
+    # another process's edit gets written straight back out, silently deleting whatever
+    # they added — which is exactly what happened to `clearing_score` mid-session. The
+    # file is shared mutable state; a write must be based on its current contents.
+    path = seed_dir() / "thesis.json"
+    current = _json.loads(path.read_text()) if path.exists() else {}
+
+    # Unknown keys are PRESERVED, not dropped. This endpoint does not know every field
+    # the config will grow, and a config writer that silently discards what it does not
+    # recognise destroys other people's work by default.
     merged = {**current, **{k: v for k, v in (update or {}).items() if k != "applies_to"}}
-    (seed_dir() / "thesis.json").write_text(_json.dumps(merged, indent=2) + "\n")
+    path.write_text(_json.dumps(merged, indent=2) + "\n")
+
+    from core import thesis as _thesis
+    if hasattr(_thesis.load, "cache_clear"):
+        _thesis.load.cache_clear()
     return get_thesis()
 
 

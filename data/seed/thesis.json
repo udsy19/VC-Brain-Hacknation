@@ -68,6 +68,20 @@
       "Low visibility is treated as a property of the observer, not of the founder."
     ]
   },
+  "clearing_score": {
+    "value": 0.55,
+    "axis": "founder",
+    "policy": "a company clears the INVESTMENT gate when the founder axis exceeds 0.55",
+    "question": "Should this fund proceed on this pre-seed company?",
+    "not_to_be_confused_with": {
+      "file": "data/seed/backtest.json",
+      "value": 0.62,
+      "question": "Would our score have DETECTED this founder before they broke out?",
+      "why_different": "The backtest threshold is calibrated on Docker, Hugging Face, Supabase and Vercel at their pre-breakout truncation dates - founders with twelve-plus months of sustained public build history. Demanding that much evidence from a pre-seed founder is a category error: it answers the investment question with the detection question's bar, and the result is abstention on essentially everyone. The two numbers answer different questions and neither is derived from the other. The backtest keeps 0.62 because its H12 fame check is a detection test."
+    },
+    "derivation": "Linear in risk_appetite.value, between two anchors that both already exist in this system. At appetite 0.0 ('only fully de-risked traction') the bar is 0.70 - the gate's own long-standing 'capability evidence is strong enough' constant. At appetite 1.0 ('pre-product technical conviction') the bar is 0.50 - the no-information prior, the score this system itself assigns a company with zero observed events, so clearing it means only that the evidence is net-positive about the founder. Hence 0.70 - 0.20 * appetite; at the shipped appetite of 0.75 that is 0.55. It is deliberately never set below 0.50, which would mean investing on evidence that is net-negative.",
+    "note": "Fund policy, not a measurement. The gate reads this file and nothing else; intelligence/gate.py carries an identical fallback so a missing field cannot silently re-open the gate."
+  },
   "ranking_policy": {
     "id": "min_axis_with_momentum_tiebreak",
     "description": "Rank by the weakest of the three axes, then by momentum. The axes are never averaged into one number - not here, not in the UI.",

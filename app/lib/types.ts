@@ -86,9 +86,25 @@ export interface Axis {
   confidence: number; // 0..1
   band: number | null; // ± uncertainty, in score units
   evidence_event_ids: string[];
-  /** Present when score is null — the backend's stated reason for the absence. */
+  /** Present when score is null OR when the evidence list is empty — the backend's
+   *  stated reason. An axis with no receipts returns an EMPTY evidence list plus this,
+   *  rather than padded placeholders, so the reason is what gets rendered. */
   reason?: string;
+  /**
+   * True when this axis was computed by the screen; false when it is a seeded value.
+   * A seeded number must never be presented as a computed one, so this drives a chip
+   * on the card rather than being dropped on the floor.
+   */
+  live?: boolean;
+  /**
+   * What `trend` is measured in. Two units are in play and they are NOT comparable:
+   * `score_points_per_30d` is a rate, `direction_-1_to_1` is a sign. Rendering a
+   * direction of 1.0 as "+1.0" next to a rate of +0.24 invites exactly the wrong read.
+   */
+  trend_unit?: string;
 }
+
+export const TREND_UNIT_DIRECTION = "direction_-1_to_1";
 
 /**
  * An observation. `evidence_span` is the quoted text the trace drill-down must
@@ -217,6 +233,53 @@ export interface MemoSection {
   citations: string[];
 }
 
+/**
+ * One input to the confidence figure. The recommendation's confidence is the MINIMUM of
+ * these, never a mean — the same weakest-link policy the three axes are ranked by. The
+ * component holding the minimum is the `binding_component`, and naming it is the whole
+ * point: "0.40" tells you nothing you can act on, "the market axis caps it at 0.40" does.
+ */
+export interface ConfidenceComponent {
+  name: string;
+  raw: number | null;
+  unit: string;
+  /** 0..1. Null means not applicable, and such components are excluded from the minimum. */
+  support: number | null;
+  basis: string;
+}
+
+export interface CheckSize {
+  currency: string;
+  min: number;
+  target: number;
+  max: number;
+}
+
+/**
+ * The computed recommendation. This is decision input #1 and it leads the page.
+ *
+ * `amount_usd` is null on every non-PROCEED decision, and that is a FINAL ANSWER rather
+ * than a smaller cheque — the reason string says which. Never render a null amount as $0.
+ */
+export interface Recommendation {
+  decision: GateOutcome;
+  amount_usd: number | null;
+  currency: string;
+  reason: string;
+  check_size: CheckSize | null;
+  check_size_source: string | null;
+  gate: GateOutcome;
+  governing_axis: { name: string; score: number } | null;
+  confidence: {
+    value: number;
+    unit: string;
+    method: string;
+    /** Which component held the minimum. The binding constraint, named. */
+    binding_component: string | null;
+    components: ConfidenceComponent[];
+  } | null;
+}
+
 export interface Memo {
   company_id: string;
   sections: MemoSection[];
@@ -225,6 +288,16 @@ export interface Memo {
   /** null until the dissent is opened. The server enforces this; the UI must not fake it. */
   recommendation: string | null;
   recommendation_locked_reason?: string;
+  /**
+   * The structured recommendation. Present only when the server has released it, for
+   * the same reason `recommendation` is: it arrives with the unlocked memo and not
+   * before. A locked memo carries null here and the UI renders the lock.
+   *
+   * Optional because the hand-authored fixtures genuinely do not have one — they carry
+   * a written recommendation and no computed cheque. The panel renders whichever it has
+   * and never manufactures the missing half.
+   */
+  recommendation_detail?: Recommendation | null;
 }
 
 export interface Dissent {
@@ -232,7 +305,42 @@ export interface Dissent {
   bear_case: string;
   weakest_evidence: string[];
   load_bearing_claim: string;
+  /**
+   * Per-axis distance between the memo and the dissent, normalised to SCORE UNITS
+   * (0..100) by the adapter — the wire carries 0..1. An axis absent from this map was
+   * NOT COMPUTED, which is a different statement from a spread of zero, and the two
+   * must not render alike: identical-zero bars read as "bull and bear agree perfectly",
+   * the opposite of what an uncomputed spread means.
+   */
   axis_spreads: Partial<Record<AxisKey, number>>;
+}
+
+/**
+ * One node of the trace, from `GET /companies/{id}/trace/{event_id}`.
+ *
+ * The drill-down must bottom out in a quoted span with its source URL. For a ROLLUP
+ * event the top-level `quoted_span` is a summary this system generated ("1/24 applicable
+ * green flags fired") — a real string, but not a receipt. `span_is_generated` marks that,
+ * and `underlying_evidence` carries the actual receipts underneath it. Rendering the
+ * rollup as though it were the receipt is the failure this field exists to prevent.
+ */
+export interface UnderlyingEvidence {
+  event_id: string;
+  kind: string;
+  source: string;
+  source_url: string | null;
+  quoted_span: string | null;
+  observed_at: string | null;
+}
+
+export interface EventTrace {
+  event_id: string;
+  quoted_span: string | null;
+  has_span: boolean;
+  span_is_generated: boolean;
+  underlying_evidence: UnderlyingEvidence[];
+  source_url: string | null;
+  chain: { step: string; detail: string }[];
 }
 
 export interface Thesis {

@@ -10,8 +10,37 @@
  */
 
 import type { Axis, AxisKey } from "@/lib/types";
-import { AXIS_INDEX, AXIS_LABEL, AXIS_MARKER } from "@/lib/types";
+import {
+  AXIS_INDEX,
+  AXIS_LABEL,
+  AXIS_MARKER,
+  TREND_UNIT_DIRECTION,
+} from "@/lib/types";
 import { Trend } from "./ui";
+
+/**
+ * A direction is a sign, not a rate. Rendering "+1.0" for "trending up" beside a genuine
+ * rate of "+0.24 points per 30 days" invites reading the first as four times the second,
+ * so a direction axis gets a word and the rate axis gets its number and its unit.
+ */
+function AxisTrend({ axis }: { axis: Axis }) {
+  if (axis.trend === null) return null;
+  if (axis.trend_unit === TREND_UNIT_DIRECTION) {
+    const t = axis.trend;
+    const word = t > 0 ? "rising" : t < 0 ? "falling" : "flat";
+    return (
+      <span
+        className="meta inline-flex items-center gap-1"
+        style={{ color: t > 0 ? "var(--accent)" : "var(--muted)" }}
+        title="Direction only — this axis reports a sign, not a rate."
+      >
+        <span aria-hidden>{t > 0 ? "▲" : t < 0 ? "▼" : "▬"}</span>
+        {word}
+      </span>
+    );
+  }
+  return <Trend value={axis.trend} />;
+}
 
 function Marker({ kind }: { kind: "dot" | "square" | "diamond" }) {
   const common = { fill: "var(--accent)" };
@@ -28,12 +57,24 @@ export default function AxisCard({
   axisKey,
   axis,
   onOpenTrace,
+  governing = false,
 }: {
   axisKey: AxisKey;
   axis: Axis;
   onOpenTrace: (a: AxisKey) => void;
+  /** The weakest axis: the one min-axis ranking actually keys on. Marked, not reordered
+   *  by colour — the cards are already sorted weakest-first by the page. */
+  governing?: boolean;
 }) {
   const count = axis.evidence_event_ids.length;
+  /**
+   * A NULL band is "we did not compute an interval", which is NOT the same claim as a
+   * band of zero. Coalescing it to 0 drew a zero-width interval and printed "±0.0",
+   * i.e. perfect certainty — the strongest possible claim, made on the weakest possible
+   * grounds. The two states are now drawn differently and neither borrows the other's
+   * confidence.
+   */
+  const hasBand = axis.band !== null;
   const band = axis.band ?? 0;
   /**
    * A null score is an ABSENCE OF EVIDENCE, not a zero, and the whole gate exists to
@@ -49,13 +90,23 @@ export default function AxisCard({
     <button
       type="button"
       onClick={() => onOpenTrace(axisKey)}
-      className="group w-full border border-[color:var(--rule)] p-5 text-left transition-colors hover:border-[color:var(--accent)]"
+      // Nothing to trace means nothing to click. A live affordance that opens an empty
+      // drawer reads as a broken feature; an inert card reads as an honest absence.
+      disabled={count === 0}
+      className="group w-full border p-5 text-left transition-colors enabled:hover:border-[color:var(--accent)] disabled:cursor-default"
+      style={{
+        // The governing axis gets weight, not a sixth hue: a heavier rule in the accent.
+        borderColor: governing ? "var(--accent)" : "var(--rule)",
+        borderWidth: governing ? 2 : 1,
+      }}
       aria-label={
         scored
-          ? `${AXIS_LABEL[axisKey]} axis, score ${axis.score!.toFixed(
-              0,
-            )} plus or minus ${band.toFixed(1)}, ${count} contributing events. Open the trace.`
-          : `${AXIS_LABEL[axisKey]} axis, not scored: no observable evidence. Open the trace.`
+          ? `${AXIS_LABEL[axisKey]} axis, score ${axis.score!.toFixed(0)}${
+              hasBand ? `, plus or minus ${band.toFixed(1)}` : ", no interval computed"
+            }, ${count} contributing events.${
+              count ? " Open the trace." : ""
+            }`
+          : `${AXIS_LABEL[axisKey]} axis, not scored: no observable evidence.`
       }
     >
       <div className="flex items-center justify-between gap-2">
@@ -64,8 +115,21 @@ export default function AxisCard({
           <span className="text-[color:var(--muted)]">{AXIS_INDEX[axisKey]}</span>
           {AXIS_LABEL[axisKey]}
         </h3>
-        {axis.trend !== null && <Trend value={axis.trend} />}
+        <AxisTrend axis={axis} />
       </div>
+
+      {governing && (
+        <div className="meta mt-2 text-[color:var(--accent)]">
+          ◂ WEAKEST AXIS — THIS IS WHAT THE RANKING KEYS ON
+        </div>
+      )}
+
+      {/* A seeded number must never be read as a computed one. */}
+      {axis.live === false && (
+        <div className="meta mt-2 border border-dashed border-[color:var(--muted)] px-2 py-1 text-[color:var(--muted)]">
+          SEEDED — NOT COMPUTED BY THE SCREEN
+        </div>
+      )}
 
       {scored ? (
         <>
@@ -74,27 +138,46 @@ export default function AxisCard({
               {axis.score!.toFixed(0)}
             </span>
             <span className="mono mb-2 text-[18px] text-[color:var(--muted)]">
-              ±{band.toFixed(1)}
+              {hasBand ? `±${band.toFixed(1)}` : "no interval"}
             </span>
           </div>
 
           {/* Band drawn to scale on the 0–100 track — uncertainty is never hidden. */}
           <div className="mt-5">
-            <div className="relative h-[6px] w-full bg-[color:var(--ink-09)]">
-              <span
-                className="absolute top-0 h-[6px] bg-[color:var(--accent)] opacity-30"
-                style={{ left: `${lo}%`, width: `${Math.max(1, hi - lo)}%` }}
-              />
-              <span
-                className="absolute top-[-3px] h-[12px] w-[2px] bg-[color:var(--accent)]"
-                style={{ left: `calc(${axis.score!}% - 1px)` }}
-              />
-            </div>
-            <div className="meta mt-1.5 flex justify-between text-[color:var(--muted)]">
-              <span>{lo.toFixed(0)}</span>
-              <span>CONFIDENCE BAND</span>
-              <span>{hi.toFixed(0)}</span>
-            </div>
+            {hasBand ? (
+              <>
+                <div className="relative h-[6px] w-full bg-[color:var(--ink-09)]">
+                  <span
+                    className="absolute top-0 h-[6px] bg-[color:var(--accent)] opacity-30"
+                    style={{ left: `${lo}%`, width: `${Math.max(1, hi - lo)}%` }}
+                  />
+                  <span
+                    className="absolute top-[-3px] h-[12px] w-[2px] bg-[color:var(--accent)]"
+                    style={{ left: `calc(${axis.score!}% - 1px)` }}
+                  />
+                </div>
+                <div className="meta mt-1.5 flex justify-between text-[color:var(--muted)]">
+                  <span>{lo.toFixed(0)}</span>
+                  <span>CONFIDENCE BAND</span>
+                  <span>{hi.toFixed(0)}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Hatched, like every other absence in this app — no interval was
+                    computed, which is not the same as an interval of zero width. */}
+                <div className="relative h-[6px] w-full">
+                  <div className="hatch absolute inset-0 bg-[color:var(--ink-09)]" />
+                  <span
+                    className="absolute top-[-3px] h-[12px] w-[2px] bg-[color:var(--accent)]"
+                    style={{ left: `calc(${axis.score!}% - 1px)` }}
+                  />
+                </div>
+                <div className="meta mt-1.5 text-[color:var(--muted)]">
+                  NO INTERVAL COMPUTED — NOT A BAND OF ZERO
+                </div>
+              </>
+            )}
           </div>
         </>
       ) : (
@@ -132,9 +215,21 @@ export default function AxisCard({
         </div>
       </dl>
 
-      <div className="meta mt-3 text-[color:var(--accent)] group-hover:underline">
-        Trace → contributing events → quoted span
-      </div>
+      {/*
+        An axis with no receipts returns an EMPTY evidence list plus a reason. Offering a
+        "Trace →" affordance there would open a drawer with nothing in it, so the reason
+        is rendered instead of a link that leads nowhere.
+      */}
+      {count > 0 ? (
+        <div className="meta mt-3 text-[color:var(--accent)] group-hover:underline">
+          Trace → contributing events → quoted span
+        </div>
+      ) : (
+        <p className="caption mt-3 max-w-none text-[color:var(--muted)]">
+          {axis.reason ??
+            "No citable events are attached to this axis, so there is nothing to trace."}
+        </p>
+      )}
     </button>
   );
 }
