@@ -12,7 +12,7 @@ from datetime import datetime
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import auth, companies, insights, personal, profile
+from api.routers import auth, companies, insights, outbound, personal, profile
 from api.routers.deps import degrade, pick, resolve_as_of, seed, seed_or
 
 app = FastAPI(title="VC Brain", version="0.1.0")
@@ -37,6 +37,7 @@ app.add_middleware(
 
 app.include_router(companies.router)
 app.include_router(insights.router)
+app.include_router(outbound.router)
 # Personalisation only. Everything above this line stays reachable without a session —
 # a broken login must degrade to the objective product, never to a blank page.
 app.include_router(auth.router)

@@ -483,7 +483,23 @@ def derive_lenses(profile: DerivedProfile) -> tuple[list[Lens], list[NotInferred
     # Ties are broken by kind name so the selection is deterministic across runs — a
     # ranking that reshuffles on identical input is not a ranking.
     derivable.sort(key=lambda item: (-item[0], item[1].kind.value))
-    kept, dropped = derivable[:MAX_LENSES], derivable[MAX_LENSES:]
+
+    # A STATED red line is disqualifying REGARDLESS OF SCORE (schema/vc.py::RedLine), so
+    # it cannot be a lens that loses a popularity contest against a sector concentration.
+    # It was: with the bold profile below, red_line_auditor's raw weight of 0.4 came
+    # seventh of seven and the ceiling silently dropped it, so a fund that had typed "no
+    # crypto companies, ever" was served a crypto company with no veto and no mention of
+    # one. A revealed_candidate is NOT pinned — the user has not confirmed it, and we do
+    # not get to promote a pass streak into a rule they hold.
+    pinned = [
+        item
+        for item in derivable
+        if item[1].kind == LensKind.RED_LINE_AUDITOR
+        and any(line.source == "stated" for line in profile.red_lines)
+    ]
+    rest = [item for item in derivable if item not in pinned]
+    kept = pinned + rest[: max(0, MAX_LENSES - len(pinned))]
+    dropped = rest[max(0, MAX_LENSES - len(pinned)) :]
     for raw, lens in dropped:
         not_derived.append(
             NotInferred(
@@ -1031,6 +1047,7 @@ def rank(
         divergence = core_rank[cid] - personal_position
         scored = [item for item in fit.contributions if item.reading is not None]
         top = max(scored, key=lambda item: item.contribution) if scored else None
+        driver = _driver(scored, divergence) or top
         rows.append(
             PersonalRankRow(
                 company_id=cid,
@@ -1040,13 +1057,12 @@ def rank(
                 fit_score=fit.fit_score,
                 core_weakest_score=fit.core_weakest_score,
                 divergence=divergence,
-                top_lens=top.lens if top else None,
+                top_lens=driver.lens if driver else None,
                 why=(
-                    f"fit {fit.fit_score:.3f}; heaviest contribution "
-                    f"{top.lens.value if top else 'none'} "
-                    f"({top.contribution:.3f} = weight {top.weight:.3f} x reading "
-                    f"{top.reading:.3f})"
-                    if top
+                    f"fit {fit.fit_score:.3f}; {_driver_label(divergence)} "
+                    f"{driver.lens.value} ({driver.contribution:.3f} = weight "
+                    f"{driver.weight:.3f} x reading {driver.reading:.3f})"
+                    if driver
                     else f"fit {fit.fit_score:.3f}; every lens abstained on this company"
                 ),
             )
@@ -1059,7 +1075,7 @@ def rank(
                     core_rank=core_rank[cid],
                     personal_rank=personal_position,
                     divergence=divergence,
-                    explanation=_explain(divergence, fit, top),
+                    explanation=_explain(divergence, fit, driver),
                 )
             )
         elif divergence == 0:
@@ -1082,6 +1098,31 @@ def rank(
     )
 
 
+def _driver(scored: list[LensContribution], divergence: int) -> LensContribution | None:
+    """The lens that EXPLAINS the move, which is not always the biggest contribution.
+
+    Naming the largest contribution reads correctly for a promotion and backwards for a
+    demotion. Baseplate Systems fell nine places for the founder-first profile below, and
+    the largest-contribution rule reported `founder_bet` — a lens reading 0.589, roughly
+    what it reads everywhere. The company actually fell because `sector_pattern`, at the
+    heaviest weight on the profile, read 0.000: this fund has never invested in dev-tools.
+    An explanation that names the wrong lens is worse than none, because it invites the
+    user to argue with a weight that is not the one that moved anything.
+
+    So: a promotion is explained by the largest weighted contribution, a demotion by the
+    largest weighted SHORTFALL — weight x (1 - reading), the gap a lens opened up.
+    """
+    if not scored:
+        return None
+    if divergence >= 0:
+        return max(scored, key=lambda item: (item.contribution, item.lens.value))
+    return max(scored, key=lambda item: (item.weight * (1.0 - (item.reading or 0.0)), item.lens.value))
+
+
+def _driver_label(divergence: int) -> str:
+    return "held up by" if divergence >= 0 else "dragged down by"
+
+
 def _explain(divergence: int, fit: PersonalFit, top: LensContribution | None) -> str:
     if fit.red_line_hits:
         lines = "; ".join(
@@ -1097,12 +1138,13 @@ def _explain(divergence: int, fit: PersonalFit, top: LensContribution | None) ->
     direction = "promotes" if divergence > 0 else "demotes"
     driver = (
         f"{top.lens.value} at weight {top.weight:.3f} reading {top.reading:.3f}"
+        f"{' — this fund has no history here' if top.reading == 0.0 else ''}"
         if top
         else "no lens produced a reading"
     )
     return (
         f"Your council {direction} this by {abs(divergence)} place(s) against core rank. "
-        f"Driver: {driver}. Core ranks on its weakest axis "
+        f"{_driver_label(divergence).capitalize()}: {driver}. Core ranks on its weakest axis "
         f"({fit.core_weakest_axis} {fit.core_weakest_score:.3f}) and is unchanged by this — "
         f"if you disagree with the move, the lens weight is the thing to argue with, not "
         f"the evidence."

@@ -86,8 +86,12 @@ backend dies, say so and keep going; the page still renders.
 - The Proof Protocol completion is pre-run.
 - Backtest winners/controls are a curated cohort; the **replay** through the live code
   path is real, the cohort is hand-collected.
-- Market and idea-vs-market axes are seeded; the founder axis is computed live. The
-  `live` flag on each axis says which is which.
+- Which axes are computed, precisely: on the RANKED LIST the founder axis is computed
+  live and market / idea-vs-market are seeded, because assessing them costs an LLM call
+  per company (~7s) and the list would take ~95s. Opening a company's DETAIL page
+  computes all three for real and warms them into the list. Every axis carries a `live`
+  flag and the UI shows a SEEDED — NOT COMPUTED chip, so you never have to remember
+  which is which — point at the chip rather than asserting it.
 - `access_lift` now reports **0.556** over a real visibility spread. It returns
   nothing when visibility is uniform, so a number means it actually measured.
 
