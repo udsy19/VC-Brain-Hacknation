@@ -64,6 +64,24 @@ DEFAULTS: dict[str, Any] = {
 DOCUMENT_KEY = "thesis"
 
 
+def stored_document() -> dict | None:
+    """The thesis as edited through PUT /thesis, or None if nobody has edited it.
+
+    THE ONE PLACE that decides whether the stored document is consulted at all, so the
+    API and the engine cannot disagree about which thesis is live — they did, briefly,
+    and a config panel that shows a different thesis from the one being enforced is
+    worse than no panel.
+
+    Isolation is the DATABASE's job, not this function's: a process pointed at its own
+    store (tests, via VCBRAIN_DB_PATH with DATABASE_URL unset) simply finds no stored
+    document and falls through to its own seed file. Filtering here on the seed dir
+    instead would have made the stored thesis untestable.
+    """
+    from core import state
+
+    return state.get_document(DOCUMENT_KEY)
+
+
 def load(path: Path | None = None) -> dict:
     """The live thesis: the stored edit if there is one, else the file, else DEFAULTS.
 
@@ -73,13 +91,15 @@ def load(path: Path | None = None) -> dict:
     the file, editing the thesis would change what the panel displays and nothing else,
     which is precisely the "picture of a control panel" this module was written to end.
 
-    An explicit `path` still forces the file, because a caller naming a file means a file
-    — that is what keeps tests pointing at a tmp fixture honest.
+    An explicit `path` forces the file, because a caller naming a file means a file. So
+    does VCBRAIN_SEED_DIR, for the reason seed_path() already gives: a test pointing at a
+    tmp fixture must not silently assert against the production config. That rule was
+    written about the hardcoded file path and it applies unchanged to the stored
+    document — an overridden seed dir means "this process has its own thesis", and
+    reaching past it to a shared database would reintroduce exactly the bug it fixed.
     """
     if path is None:
-        from core import state
-
-        stored = state.get_document(DOCUMENT_KEY)
+        stored = stored_document()
         if stored is not None:
             return {**DEFAULTS, **stored}
 

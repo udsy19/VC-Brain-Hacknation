@@ -90,14 +90,13 @@ def get_thesis() -> dict:
     changes. The file was previously served, rendered, editable — and read by
     nothing, which made it a picture of a control panel.
     """
-    from core import state
     from core import thesis as thesis_mod
 
-    # The stored edit wins over the shipped file, matching core.thesis.load(). Without
-    # this the panel would render the seed defaults straight after a successful save on
-    # any deployment whose filesystem cannot be written — an edit that "worked" and then
-    # visibly un-did itself on reload.
-    t = state.get_document(thesis_mod.DOCUMENT_KEY) or seed("thesis")
+    # The stored edit wins over the shipped file, through the SAME accessor the engine
+    # uses. Without this the panel would render the seed defaults straight after a
+    # successful save on any deployment whose filesystem cannot be written — an edit that
+    # "worked" and then visibly un-did itself on reload.
+    t = thesis_mod.stored_document() or seed("thesis")
     return {
         **t,
         "applies_to": {
@@ -213,7 +212,7 @@ def list_companies(as_of: datetime | None = None) -> list[dict]:
     cutoff = resolve_as_of(as_of)
 
     def live() -> list[dict]:
-        from memory import score as score_mod, store
+        from memory import score as score_mod
 
         # Read-only request: the store cannot change under us, so the scorer's pure
         # reads are memoized for its duration. Without this every company runs the

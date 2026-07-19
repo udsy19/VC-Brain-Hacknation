@@ -10,7 +10,18 @@ node_modules/
 out/
 
 # caches: regenerable, and llm_cache gets large fast
-data/llm_cache/*
+# The LLM completion cache IS COMMITTED, deliberately.
+#
+# It is 12MB of prompt-hash -> response for the seed corpus, and on Vercel it is the
+# difference between a demo and a 504: measured on a read-only simulation, GET /dissent
+# takes 10.8s with the cache and 90.8s without it, against maxDuration 60. The memo goes
+# 9.0s -> 27.1s. Serverless has no warm disk to rebuild it on, so an ignored cache is a
+# cache that never exists in production.
+#
+# It contains prompts and completions about public evidence only — no keys, no
+# credentials, no private data. Checked before committing, and worth re-checking if the
+# corpus ever ingests anything non-public.
+!data/llm_cache/*
 !data/llm_cache/.gitkeep
 data/raw/*
 !data/raw/.gitkeep

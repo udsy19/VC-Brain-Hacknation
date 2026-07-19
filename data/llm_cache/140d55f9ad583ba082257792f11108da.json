@@ -1,0 +1,1 @@
+{"model": "gpt-4o-mini", "prompt": "Query: companies in wearable ai\n\n<untrusted_content>\ncompanies in wearable ai\n</untrusted_content>", "response": "{\n  \"sectors\": [\"wearable\", \"ai\"],\n  \"trend\": null,\n  \"min_score\": null,\n  \"verification\": null,\n  \"gate\": null,\n  \"limit\": null\n}"}

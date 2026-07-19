@@ -101,3 +101,91 @@ curl -s localhost:8000/health | python3 -m json.tool
 curl -s localhost:8000/companies | python3 -c "import sys,json;[print(r['rank'],r['name'],r['axes']['founder']['score']) for r in json.load(sys.stdin)[:6]]"
 curl -s localhost:8000/backtest  | python3 -c "import sys,json;d=json.load(sys.stdin);print('fame',d['fame_check_passed'],'hit',d['hit_rate'],'traj',len(d['trajectories']))"
 ```
+
+---
+
+# Deploying to Vercel
+
+## THE ONE THING THAT WILL BREAK THE DEMO IF YOU SKIP IT
+
+**Ship `data/llm_cache/`.** It is currently gitignored (`data/llm_cache/*`), so it does
+not reach the deployment, and every LLM-backed route then makes its calls for real.
+Measured on a read-only filesystem with the exact production code:
+
+| route | cache shipped | cache absent |
+|---|---|---|
+| `GET /companies/{id}/dissent` | **10.8s** | **90.8s — exceeds `maxDuration: 60`, Vercel kills it** |
+| `GET /companies/{id}/memo` | 9.0s | 27.1s |
+
+The dissent view is the signature beat, and without the cache it returns a 504 on stage.
+The cache is 11MB against a 250MB ceiling. To ship it, drop the `data/llm_cache/*` line
+from `.gitignore` and commit the directory. Cache keys are derived from the prompt, so
+they only hit if the deployment reads the SAME database the cache was warmed against —
+which it does, since both point at the same Supabase project.
+
+If you would rather not ship it, raise `maxDuration` to 300 in `vercel.json`. That
+requires a Pro plan with Fluid compute; on Hobby the ceiling is 60 and the deploy will
+be rejected.
+
+## Required environment variables (names only — never paste values into a file)
+
+Set in the Vercel project, Production + Preview:
+
+| name | why |
+|---|---|
+| `DATABASE_URL` | **Must be the SESSION POOLER host** — see below. Everything durable lives here. |
+| `OPENAI_API_KEY` | Memo, dissent, screening, proof generation. |
+| `LLM_PROVIDER` | Optional; `openai` (default) or `anthropic`. |
+| `ANTHROPIC_API_KEY` | Only if `LLM_PROVIDER=anthropic`. |
+| `TAVILY_API_KEY` | Web evidence. Absent = search degrades, no crash. |
+| `GITHUB_TOKEN` | 60/hr → 5000/hr. Absent = live scanning silently returns nothing. |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Read by config; the store itself talks psycopg. |
+
+`VERCEL` and `VERCEL_ENV` are set by the platform — do not set them yourself. `VERCEL`
+is what flips `core.config.cache_root()` to `/tmp`, and `VERCEL_ENV` is what makes
+session cookies `Secure`.
+
+### DATABASE_URL must be the session pooler
+
+Use `aws-0-<region>.pooler.supabase.com:5432`. The direct
+`db.<project>.supabase.co` host is **IPv6-only and unreachable from Vercel** — this has
+bitten this project before. Verify without printing the secret:
+
+```bash
+python3 -c "import os,socket;from urllib.parse import urlparse;h=urlparse(os.environ['DATABASE_URL']).hostname;print(h,'pooler' if 'pooler' in h else 'DIRECT — WILL NOT CONNECT');print(socket.getaddrinfo(h,None,socket.AF_INET)[0][4][0])"
+```
+
+## Apply the migrations before the first deploy
+
+```bash
+uv run python scripts/migrate.py    # 008 adds dissent_unlocks, proof_challenges, config_documents
+```
+
+The app also creates these three tables on first use, so a missed migration degrades
+rather than breaks — but the Postgres-only row-level-security posture only comes from
+the migration.
+
+## What is different about the deployment (and why)
+
+The deployment filesystem is **read-only except `/tmp`**, and consecutive requests may
+land on **different processes**. Both change behaviour:
+
+- **Caches** (`llm_cache`, `standout_cache`, decks) resolve under `/tmp` via
+  `core.config.cache_root()`, and every write to them is guarded. `/tmp` does not
+  survive the invocation, so caching is best-effort — which is exactly why the point
+  above about shipping the warmed cache matters.
+- **The dissent lock, proof challenges, and the edited thesis** live in Postgres
+  (migration 008), because a module global is invisible to the next request and, worse,
+  visible to the *wrong user* on a warm one.
+- **The dissent lock is per-viewer.** Signed in, it is keyed to the user; anonymous, to
+  an httpOnly `vcbrain_viewer` cookie minted the first time a bear case is served. One
+  attendee opening the dissent does **not** unlock the recommendation for anybody else.
+- **`PUT /thesis` returns 503 if it cannot persist**, rather than 200 over a lost edit.
+  Uploaded decks are **not** durable and do not need to be — their claims are already
+  events in Postgres and the dedupe key is the SHA-256, not the file.
+
+## Bundle budget (measured)
+
+123MB of Python dependencies + 4.3MB of tracked source (+11MB if you ship the LLM
+cache) ≈ **138MB against the 250MB ceiling**. `data/seed/` is tracked and ships; the
+routes read their fixtures from it.
