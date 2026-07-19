@@ -1,0 +1,43 @@
+-- Company provenance loses its DEFAULT. Applied by scripts/migrate.py; idempotent.
+--
+-- WHAT 006 GOT WRONG. 006 added this column `not null default 'sourced'` and argued:
+-- "Every runtime writer — the scanners and inbound intake — is reading the real world,
+-- so that is the correct default for anything created outside the seed loader."
+--
+-- That argument is about the WRITERS. The column is read as a CLAIM ABOUT THE EVIDENCE
+-- — the fame-vs-fitness gate, the memo, the UI and the outbound drafts all use it to
+-- decide whether a company's evidence was collected or authored. Those two things come
+-- apart precisely when a write half-succeeds: the writer really was pointed at the real
+-- world, and yet no evidence landed. The default then asserts evidence-backing on a row
+-- that has none, and it is only ever wrong in the direction that OVERCLAIMS.
+--
+-- MEASURED, NOT HYPOTHETICAL. At the time of this migration 8 companies in the live
+-- store carry provenance='sourced' with zero events beneath them:
+--   BillAI Bass, Clawk, ctx, Docx-CLI, OpenKnowledge, Rowboat, router, Frugon
+-- They are real Show HN companies with real resolved founder entities (each entity was
+-- created in the same second as its company). They form one contiguous 47-second window
+-- at the start of a discover run — 04:25:57 to 04:26:44 — and every candidate from
+-- 04:27:33 onward carries 40-70 events. The evidence fan-out returned nothing for the
+-- first eight and then started working. `scripts/source.py::load_candidates` records
+-- that per-candidate in `out["failures"]` and continues, which is the right call for a
+-- long run, but it means the company row lands with nothing under it. The provenance
+-- column then said "sourced" about all eight and no consumer could tell.
+--
+-- WHY NOT INVERT THE DEFAULT TO 'constructed'. That is a different false claim, not a
+-- safer one. 'constructed' means "authored for this repository", and stamping it on a
+-- real scraped company would put it in the population the fame-vs-fitness gate treats
+-- as synthetic control. When we do not know, NEITHER value is honest — so there is
+-- nothing safe to default to, and the correct shape is to have no default at all.
+--
+-- WHAT THIS CHANGES IN PRACTICE. The column stays `not null`, so an insert that omits
+-- it now fails the not-null constraint rather than silently claiming 'sourced'. Both
+-- store backends (memory/store.py, memory/pg_store.py) already pass the value on every
+-- insert, so no live writer is affected. Existing rows are untouched: dropping a default
+-- is metadata-only and never rewrites data.
+--
+-- THE 8 ROWS ARE LEFT AS THEY ARE, DELIBERATELY. Relabelling them 'constructed' would
+-- be a lie, and deleting them would destroy the record of a real discover run. What
+-- they need is their evidence re-fetched (re-run the discover load for those logins);
+-- until then their emptiness is visible to any consumer that counts their events.
+
+alter table companies alter column provenance drop default;

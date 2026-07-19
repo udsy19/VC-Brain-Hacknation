@@ -22,14 +22,14 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from memory.store import Alias, Merge
-from schema.events import Company, Entity, Event
+from schema.events import Company, CompanyProvenance, Entity, Event
 
 _EVENT_COLS = (
     "event_id, entity_id, company_id, kind, source, source_url, "
     "observed_at, ingested_at, payload, evidence_span, confidence, integrity_flags"
 )
 _ENTITY_COLS = "entity_id, display_name, name_normalized, created_at"
-_COMPANY_COLS = "company_id, name, founder_entity_ids, archetype, created_at"
+_COMPANY_COLS = "company_id, name, founder_entity_ids, archetype, provenance, created_at"
 _ALIAS_COLS = "entity_id, kind, value, source"
 _MERGE_COLS = "entity_a, entity_b, status, score, rationale, decided_at"
 
@@ -214,22 +214,49 @@ class PostgresEventStore:
         *,
         founder_entity_ids: list[UUID] | None = None,
         archetype: int | None = None,
+        provenance: CompanyProvenance = CompanyProvenance.SOURCED,
     ) -> Company:
         company = Company(
-            name=name, founder_entity_ids=list(founder_entity_ids or []), archetype=archetype
+            name=name,
+            founder_entity_ids=list(founder_entity_ids or []),
+            archetype=archetype,
+            provenance=provenance,
         )
         with self._connection().cursor() as cur:
             cur.execute(
-                f"insert into companies ({_COMPANY_COLS}) values (%s,%s,%s,%s,%s)",
+                f"insert into companies ({_COMPANY_COLS}) values (%s,%s,%s,%s,%s,%s)",
                 (
                     company.company_id,
                     company.name,
                     company.founder_entity_ids,
                     company.archetype,
+                    str(company.provenance),
                     company.created_at,
                 ),
             )
         return company
+
+    def set_company_provenance(self, company_id: UUID, provenance: CompanyProvenance) -> None:
+        with self._connection().cursor() as cur:
+            cur.execute(
+                "update companies set provenance = %s where company_id = %s",
+                (str(provenance), company_id),
+            )
+
+    def set_company_founders(self, company_id: UUID, founder_entity_ids: list[UUID]) -> None:
+        """Backfill the denormalized founder column on an existing row.
+
+        Companies created before their founder was resolved carry an empty column, and
+        every reader then falls back to scanning the event log to find the company's
+        entities — one extra round trip per company on the `GET /companies` hot path.
+        Rows sourced after resolution set it at creation; this exists for the ones
+        already in the table.
+        """
+        with self._connection().cursor() as cur:
+            cur.execute(
+                "update companies set founder_entity_ids = %s where company_id = %s",
+                (list(founder_entity_ids), company_id),
+            )
 
     def get_company(self, company_id: UUID) -> Company | None:
         with self._connection().cursor(row_factory=dict_row) as cur:

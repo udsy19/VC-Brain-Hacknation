@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from api import attest
 from api import memo as memo_mod
+from core import state
+from schema.events import ClaimStatus, utcnow
 from api.routers.deps import (
     as_uuid,
     degrade,
@@ -17,9 +20,11 @@ from api.routers.deps import (
     fixture_key,
     founder_entity_ids,
     pick,
+    reset_screening_cache,
     resolve_as_of,
     seed,
     seed_or,
+    viewer_scope,
 )
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -27,21 +32,72 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 # THE DISSENT LOCK.
 #
 # Server-side, because a query flag the frontend sets is not a lock — it is a
-# suggestion, and it is bypassable live on stage with a URL edit. A company lands in
-# this set only when GET /companies/{id}/dissent actually served the anti-memo. The
+# suggestion, and it is bypassable live on stage with a URL edit. A company is unlocked
+# only when GET /companies/{id}/dissent actually served the anti-memo. The
 # dissent_viewed request flag alone can NEVER unlock the recommendation.
-_DISSENT_SERVED: set[str] = set()
+#
+# SCOPED PER VIEWER, AND STORED IN POSTGRES (migration 008). This was a module-level
+# `set[str]`, which has the same weakness across lambdas that a client flag has across a
+# URL bar. Serverless broke it in both directions: an unlock recorded on one lambda was
+# invisible to the next request, so the recommendation never opened; and on a warm
+# lambda one visitor's unlock opened that company for EVERY OTHER VISITOR, who then read
+# the cheque figure having never been shown the case against it. The second is the one
+# that matters — it is the exact failure the lock exists to prevent — and it is why the
+# key is (scope, company) and never company alone. See deps.viewer_scope for how an
+# anonymous browser gets a scope of its own.
+#
+# The in-process set REMAINS, as the fallback for when there is no viewer identity or no
+# reachable database. That is a narrower guarantee, not a bypass: it still requires the
+# server to have served a bear case, and it is exactly the behaviour local dev has today.
+_DISSENT_SERVED: set[tuple[str, str]] = set()
+
+#: The scope used when deps.viewer_scope cannot identify a viewer. Process-local by
+#: construction — it is NEVER written to the database, because a shared row under a
+#: shared key is precisely the cross-user leak this table was created to end.
+_LOCAL_SCOPE = "local"
 
 
-def dissent_was_served(company_id: str) -> bool:
-    return company_id in _DISSENT_SERVED
+def dissent_was_served(company_id: str, request: Any = None) -> bool:
+    """Has THIS viewer been served the bear case for this company?"""
+    scope = _scope(request)
+    if scope is not None:
+        rows = state.fetch(
+            "select 1 from dissent_unlocks where scope = ? and company_id = ?",
+            (scope, company_id),
+        )
+        # None means the store could not answer. Fall through to process memory rather
+        # than reporting "not unlocked" — a database blip must not re-lock a
+        # recommendation the user is part-way through reading.
+        if rows is not None:
+            return bool(rows)
+    return (_LOCAL_SCOPE if scope is None else scope, company_id) in _DISSENT_SERVED
+
+
+def record_dissent_served(company_id: str, request: Any = None, response: Any = None) -> None:
+    """Called ONLY from a route that actually rendered a bear case."""
+    scope = _scope(request, response)
+    if scope is not None and state.write(
+        "insert into dissent_unlocks (scope, company_id, served_at) values (?, ?, ?) "
+        "on conflict (scope, company_id) do nothing",
+        (scope, company_id, utcnow().isoformat()),
+    ):
+        return
+    _DISSENT_SERVED.add((_LOCAL_SCOPE if scope is None else scope, company_id))
+
+
+def _scope(request: Any, response: Any = None) -> str | None:
+    if request is None:
+        return None
+    try:
+        return viewer_scope(request, response)
+    except Exception:  # noqa: BLE001 - an unidentifiable viewer is the local fallback
+        return None
 
 
 def reset_dissent_locks() -> None:
     """Test/demo-reset hook. Not routed — there is deliberately no HTTP way to unlock."""
-    from api.routers.deps import reset_screening_cache
-
     _DISSENT_SERVED.clear()
+    state.reset()
     reset_screening_cache()
 
 
@@ -68,18 +124,24 @@ def get_company(company_id: str, as_of: datetime | None = None) -> dict:
     if cid:
         detail["company_id"] = str(cid)
         try:
-            from memory import score as score_mod
+            from intelligence import team as team_mod
 
-            ents = founder_entity_ids(cid)
-            if ents:
-                fs = score_mod.founder(ents[0], cutoff)
+            if founder_entity_ids(cid):
+                # `ents[0]` used to be the whole Founder axis for this page, so a
+                # co-founder carrying the technical signal was invisible here. The team
+                # score aggregates every resolved founder; for a solo founder it is
+                # byte-identical to that founder's own FounderScore, so no single-founder
+                # company's numbers move. `founder_score` keeps its existing shape for
+                # the dashboard; `team_score` carries the composition detail.
+                ts = team_mod.team_score(cid, cutoff)
                 detail["founder_score"] = {
-                    "mu": fs.mu,
-                    "band": fs.band,
-                    "trend": fs.trend,
-                    "contributing_event_ids": [str(i) for i in fs.contributing_event_ids],
+                    "mu": ts.mu,
+                    "band": ts.band,
+                    "trend": ts.trend,
+                    "contributing_event_ids": [str(i) for i in ts.contributing_event_ids],
                     "as_of": cutoff.isoformat(),
                 }
+                detail["team_score"] = team_mod.as_dict(ts)
         except Exception:  # noqa: BLE001 - a fixture detail page still beats a 500
             pass
     return detail
@@ -94,7 +156,11 @@ def _normalize_detail(detail: dict, company_id: str, cutoff) -> dict:
     app/lib/adapt.ts. An adapter that translates between two of our own endpoints is a
     bug with a shim on top, so the translation belongs here, once.
     """
-    from api.main import _ranked_row
+    # _rescale_axis is THE axis serializer, shared with the ranked list. This module used
+    # to carry a second, divergent copy: the two disagreed on null (the list's coalesced
+    # an unmeasured axis to a confident 0.0) and on how `trend` was scaled. One function,
+    # one answer, so the detail page and the list cannot drift apart again.
+    from api.main import _ranked_row, _rescale_axis
 
     out = dict(detail)
 
@@ -117,11 +183,13 @@ def _normalize_detail(detail: dict, company_id: str, cutoff) -> dict:
         merged = dict(summary.get("axes") or {})
         for name, axis in (out.get("axes") or {}).items():
             if name not in merged and isinstance(axis, dict):
-                merged[name] = _axis_to_client(axis)
+                merged[name] = _rescale_axis(axis)
         out["axes"] = merged
     except Exception:  # noqa: BLE001 - a detail page still beats a 500
+        from api.main import _rescale_axis
+
         out["axes"] = {
-            k: _axis_to_client(v) for k, v in (out.get("axes") or {}).items() if isinstance(v, dict)
+            k: _rescale_axis(v) for k, v in (out.get("axes") or {}).items() if isinstance(v, dict)
         }
 
     # The engine wins here too. This used to unconditionally overwrite the computed gate
@@ -137,45 +205,18 @@ def _normalize_detail(detail: dict, company_id: str, cutoff) -> dict:
         )
         out["gate_rationale"] = gate.get("rationale") if isinstance(gate, dict) else None
 
+    # Provenance is ASSIGNED, not defaulted: the detail payload can arrive from a
+    # hand-authored fixture, and a fixture describing its own evidence as sourced is
+    # the exact failure this field exists to catch. The store row is authoritative,
+    # and an unknown company is treated as constructed rather than sourced.
+    out["provenance"] = _provenance_for(company_id) or out.get("provenance") or "constructed"
+
     out.setdefault("events", _events_for(company_id, cutoff))
     out.setdefault("claims", [])
     out.setdefault("integrity", _integrity_for(company_id, cutoff))
     out.setdefault("proof_protocol", None)
     out.setdefault("entity_resolution_note", None)
     return out
-
-
-def _axis_to_client(axis: dict) -> dict:
-    """Fixture axes are authored 0..1; the client's Axis is 0..100 in score units.
-
-    `live: False` — a fixture axis was authored, not computed this request.
-
-    Receipts are only the evidence entries that actually name an event. This used to
-    emit one `""` per entry whose `event_ref` was missing, which is how market and
-    idea-vs-market reported 34/34 and 50/50 empty ids while still showing a confidence:
-    placeholders that render as clickable receipts leading nowhere.
-    """
-    scale = (
-        (lambda v: None if v is None else round(float(v) * 100, 1))
-        if (isinstance(axis.get("score"), (int, float)) and axis["score"] <= 1.0)
-        else (lambda v: v)
-    )
-    ids = [str(i) for i in (axis.get("evidence_event_ids") or []) if str(i).strip()]
-    if not ids:
-        ids = [
-            str(e["event_ref"])
-            for e in (axis.get("evidence") or [])
-            if str(e.get("event_ref") or "").strip()
-        ]
-    return {
-        **axis,
-        "score": scale(axis.get("score")),
-        "band": scale(axis.get("band")),
-        "trend": scale(axis.get("trend")),
-        "evidence_event_ids": ids,
-        "live": False,
-        **({} if ids else {"reason": "seeded axis — no computed receipts for this axis"}),
-    }
 
 
 def _events_for(company_id: str, cutoff) -> list[dict]:
@@ -211,6 +252,21 @@ def _integrity_for(company_id: str, cutoff) -> list[dict]:
     ]
 
 
+def _provenance_for(company_id: str) -> str | None:
+    """'sourced' | 'constructed' from the store row, or None if it cannot be resolved.
+
+    None means "do not know", and every caller treats that as constructed rather than
+    sourced. Silence here must never read as a vouch for the evidence.
+    """
+    from memory import store
+
+    cid = company_uuid(company_id)
+    if cid is None:
+        return None
+    row = store.get_company(cid)
+    return (row or {}).get("provenance")
+
+
 def _detail_from_store(company_id: str, slug: str) -> dict | None:
     """A detail page assembled from the event log, for companies without a fixture."""
     from memory import store
@@ -228,6 +284,7 @@ def _detail_from_store(company_id: str, slug: str) -> dict | None:
         "slug": slug,
         "name": row.get("name"),
         "archetype": row.get("archetype"),
+        "provenance": row.get("provenance"),
         "source": "event_log",
         "event_count": len(events),
         "events": [
@@ -492,7 +549,12 @@ def get_standout(company_id: str, as_of: datetime | None = None, refresh: bool =
 
 
 @router.get("/{company_id}/memo")
-def get_memo(company_id: str, as_of: datetime | None = None, dissent_viewed: bool = False) -> dict:
+def get_memo(
+    company_id: str,
+    request: Request,
+    as_of: datetime | None = None,
+    dissent_viewed: bool = False,
+) -> dict:
     """Recommendation stays null until the dissent has actually been served.
 
     Enforced here against server state. `dissent_viewed=true` on its own does nothing —
@@ -504,13 +566,37 @@ def get_memo(company_id: str, as_of: datetime | None = None, dissent_viewed: boo
         lambda: seed(f"memo_{company_id}"),
     )
 
+    # The live path emits every declared section; the seed passthrough returns whatever
+    # the fixture happens to carry. That made a section's PRESENCE depend on which path
+    # served the request, so a client reading body["founder"] worked live and raised on
+    # the fallback. Missing sections are filled as explicitly empty — never invented —
+    # so the shape is stable and an unwritten section still reads as unwritten.
+    # A section we had to fill is a GAP, and it has to say so. Filling the shape while
+    # leaving `gaps` empty is precisely the "memo that fabricates completeness" this
+    # endpoint exists to prevent — the reader would see five headings and no admission
+    # that three of them were never written.
+    unwritten = [name for name in memo_mod.SECTIONS if name not in result]
+    for name in unwritten:
+        result[name] = {"summary": None, "not_written": True}
+    if unwritten:
+        gaps = result.get("gaps")
+        result["gaps"] = (gaps if isinstance(gaps, list) else []) + [
+            {
+                "claim": f"the {name} section",
+                "source_span": "",
+                "status": str(ClaimStatus.NOT_ATTEMPTED),
+                "why": "this section was never written for this company",
+            }
+            for name in unwritten
+        ]
+
     # Both must hold: the server must have served the anti-memo, AND the client must
     # say it rendered it. The client half alone is not sufficient — that is the lock.
     #
     # `investment_recommendation` carries the cheque figure, so it is locked by the SAME
     # gate as the prose section — it is in fact the thing the lock exists to protect, and
     # leaving it readable while nulling the prose would make the lock decorative.
-    if not (dissent_was_served(company_id) and dissent_viewed):
+    if not (dissent_was_served(company_id, request) and dissent_viewed):
         result["recommendation"] = None
         result["investment_recommendation"] = None
         result["recommendation_locked_reason"] = "open the dissent view first"
@@ -518,7 +604,9 @@ def get_memo(company_id: str, as_of: datetime | None = None, dissent_viewed: boo
 
 
 @router.get("/{company_id}/dissent")
-def get_dissent(company_id: str, as_of: datetime | None = None) -> dict:
+def get_dissent(
+    company_id: str, request: Request, response: Response, as_of: datetime | None = None
+) -> dict:
     """Serving the anti-memo is the ONLY thing that unlocks the recommendation."""
     cutoff = resolve_as_of(as_of)
 
@@ -553,7 +641,7 @@ def get_dissent(company_id: str, as_of: datetime | None = None) -> dict:
     # Same substance test as the council route: reaching this line means SOMETHING
     # rendered, but a payload carrying no bear case has not shown anyone a dissent.
     if _rendered_bear_case(result):
-        _DISSENT_SERVED.add(company_id)
+        record_dissent_served(company_id, request, response)
     else:
         result["recommendation_locked_reason"] = (
             "no bear case could be produced for this company, so the recommendation "
@@ -576,7 +664,9 @@ def _council_view(cid, cutoff) -> dict | None:
 
 
 @router.post("/{company_id}/council")
-def run_council(company_id: str, as_of: datetime | None = None) -> dict:
+def run_council(
+    company_id: str, request: Request, response: Response, as_of: datetime | None = None
+) -> dict:
     """Run C's AI Council. Like the dissent view, actually serving a council
     deliberation is what unlocks the recommendation — never a client boolean."""
     cutoff = resolve_as_of(as_of)
@@ -604,7 +694,7 @@ def run_council(company_id: str, as_of: datetime | None = None) -> dict:
     # GET /memo?dissent_viewed=true returned a recommendation having shown no dissent at
     # all. The lock is the product; this is the hole in it.
     if _rendered_bear_case(result):
-        _DISSENT_SERVED.add(company_id)
+        record_dissent_served(company_id, request, response)
     else:
         result["recommendation_locked_reason"] = (
             "this council returned no anti-memo, so it does not count as dissent — "

@@ -341,7 +341,6 @@ def _burst_with_substance(events: Sequence[Event]) -> tuple[bool, list[Event]]:
     return bool(hits), hits[:3]
 
 
-
 # ---------------------------------------------------------------------------
 # maintenance_after_launch -- specified in docs/SOURCES.md section 2 at magnitude
 # 0.7 and called the best cost-to-signal ratio in the registry. It measures
@@ -432,6 +431,21 @@ _PROOF = frozenset({Source.PROOF_PROTOCOL})
 _TEXTY = frozenset({Source.GITHUB, Source.HN, Source.WEB, Source.ARXIV})
 
 _NUMBERS_WITH_UNITS = r"\b\d[\d,.]*\s?(ms|s|qps|rps|gb|mb|tokens?/s|%|x faster|x speedup)\b"
+
+
+def _thesis_is_software() -> bool:
+    """Is the fund actually looking at software? Read per call, never cached.
+
+    Fails OPEN — an unreadable thesis or one naming no sector answers True, so an
+    unconfigured installation keeps the behaviour it has always had.
+    """
+    try:
+        from core import search as web_search
+
+        return web_search.thesis_serves_family("software")
+    except Exception:  # noqa: BLE001
+        return True
+
 
 RULES: list[Rule] = [
     # -- shipping & cadence -------------------------------------------------
@@ -604,6 +618,18 @@ RULES: list[Rule] = [
         _ARXIV,
         _keyword_rule(r"\b(github\.com|code available|open[- ]?source(d)?)\b", EventKind.PAPER),
     ),
+    # The two SECTOR-LITERAL rules. Every other keyword rule in this file asks about
+    # reasoning — did they state an assumption, name a non-goal, cite a measured
+    # number — and those questions are the same in any industry. These two are not:
+    # they match software vocabulary and nothing else, so under a biotech or fintech
+    # thesis they were evaluated against every founder and failed against every
+    # founder, marking down an entire industry for not saying "kernel". They now
+    # apply only when the fund is actually looking at software, which leaves the
+    # shipped AI-infra thesis untouched and stops them being a tax on everyone else.
+    #
+    # NOT YET SOLVED, and worth saying plainly: there is no non-software domain-depth
+    # rule to replace them with. A fintech founder cannot currently be scored FOR
+    # depth in their own field, only no longer scored against it.
     Rule(
         "infra_domain_depth",
         "Work sits in genuinely hard infra territory?",
@@ -613,6 +639,7 @@ RULES: list[Rule] = [
             r"\b(compiler|kernel|inference|scheduler|distributed|gpu|cuda|"
             r"quantization|runtime|allocator|jit|vectoriz)\w*\b"
         ),
+        applicable_when=lambda events, as_of: _thesis_is_software(),
     ),
     Rule(
         "benchmarks_published",
@@ -620,6 +647,7 @@ RULES: list[Rule] = [
         2.0,
         _TEXTY,
         _keyword_rule(r"\b(benchmark|latency|throughput)\b"),
+        applicable_when=lambda events, as_of: _thesis_is_software(),
     ),
     Rule(
         "explains_tradeoffs",
@@ -765,18 +793,171 @@ CAREER_HISTORY_RULES: list[Rule] = [
 ]
 
 
-def _active_rules() -> list[Rule]:
-    """RULES, plus the career-history rules only while the flag is on.
+# ---------------------------------------------------------------------------
+# Sector evidence classes: the same QUESTIONS, evidenced outside software.
+#
+# Every rule above is gated on a Source enum -- GITHUB, HN, ARXIV -- which meant
+# "shipped something" was DEFINED as "tagged a GitHub release". For a company whose
+# product is code that definition is right. Everywhere else it is simply false, and
+# the consequence was not that a biotech or fintech founder scored badly: it was
+# that NO RULE WAS APPLICABLE, so y_t came back uninformative and, under
+# `min_axis_with_momentum_tiebreak`, they landed at the bottom anyway. "We have no
+# signal on this person" and "this person is weak" produced the same rank.
+#
+# The instances come from `data/sources.json -> evidence_classes`, so adding an
+# industry is a config change. Two properties are load-bearing:
+#
+#   WEIGHT PARITY. An instance carries the weight of the software rule it is the
+#       analogue of. A registered trial is worth what a shipped release is worth,
+#       because it is the same act in a field where the artifact is not code.
+#
+#   ABSENCE STAYS UNKNOWN. An instance is only APPLICABLE when its channel is
+#       reachable -- when the founder has at least one event from a source that
+#       serves it. A fintech founder with no filing in evidence does not FAIL
+#       `regulatory_licence_held`; the rule is never evaluated and never enters the
+#       denominator. This is `applicable_when`, the same gate `maintenance_after_
+#       launch` uses, applied to a different kind of ignorance.
+# ---------------------------------------------------------------------------
 
-    The flag is read per call rather than cached at import, so a test or a
-    measurement run can toggle it without reloading the module — and so that
-    turning it off genuinely restores the previous behaviour in a live process.
+_SELF_ATTESTED_SOURCES = frozenset({Source.DECK, Source.MANUAL})
+
+
+def _event_channel_id(
+    event: Event, source_ids: frozenset[str], domains: frozenset[str]
+) -> str | None:
+    """Which registry source this event came from, if it is one we asked about."""
+    sid = event.payload.get("source_id")
+    if isinstance(sid, str) and sid in source_ids:
+        return sid
+    url = event.source_url or ""
+    if not url or not domains:
+        return None
+    from urllib.parse import urlparse
+
+    host = urlparse(url if "//" in url else f"https://{url}").netloc.lower()
+    host = host.split(":")[0].removeprefix("www.")
+    for domain in domains:
+        if host == domain or host.endswith("." + domain):
+            return domain
+    return None
+
+
+def _in_channel(
+    events: Sequence[Event], source_ids: frozenset[str], domains: frozenset[str]
+) -> list[Event]:
+    return [e for e in events if _event_channel_id(e, source_ids, domains) is not None]
+
+
+def _instance_check(
+    instance: dict, source_ids: frozenset[str], domains: frozenset[str]
+) -> RuleCheck:
+    """One config instance -> one RuleCheck, per its declared `mode`.
+
+    The modes are the four questions the classes ask, and nothing here knows what
+    industry it is looking at -- that is entirely in the config.
+    """
+    mode = str(instance.get("mode") or "match")
+    pattern = instance.get("match")
+    rx = re.compile(str(pattern), re.IGNORECASE) if isinstance(pattern, str) else None
+    min_events = int(instance.get("min_events") or 1)
+    min_span_days = float(instance.get("min_span_days") or 0.0)
+    min_channels = int(instance.get("min_channels") or 2)
+
+    def check(events: Sequence[Event]) -> tuple[bool, list[Event]]:
+        pool = _in_channel(events, source_ids, domains)
+        if not pool:
+            return False, []
+        if mode == "match":
+            hits = [e for e in pool if rx.search(_text(e))] if rx is not None else []
+            return bool(hits), hits[:3]
+        if mode == "count":
+            ordered = sorted(pool, key=lambda e: e.observed_at)
+            return len(ordered) >= min_events, ordered[:3]
+        if mode == "span":
+            ordered = sorted(pool, key=lambda e: e.observed_at)
+            ok = len(ordered) >= min_events and _span_days(ordered) >= min_span_days
+            return ok, ([ordered[0], ordered[-1]] if ok else [])
+        if mode == "corroborated":
+            # Independence is about WHO CONTROLS THE CHANNEL, the rule
+            # data/traits.json already argues for: a deck and a MANUAL note are us
+            # and them, never a witness. Two events from one registry source are
+            # one channel, not two.
+            witnesses = {
+                cid
+                for e in pool
+                if e.source not in _SELF_ATTESTED_SOURCES
+                and (cid := _event_channel_id(e, source_ids, domains)) is not None
+            }
+            if len(witnesses) < min_channels:
+                return False, []
+            seen: dict[str, Event] = {}
+            for e in sorted(pool, key=lambda e: e.observed_at):
+                cid = _event_channel_id(e, source_ids, domains)
+                if cid in witnesses and cid not in seen:
+                    seen[cid] = e
+            return True, list(seen.values())[:3]
+        return False, []
+
+    return check
+
+
+def _sector_rules(sectors: frozenset[str]) -> list[Rule]:
+    """Evidence-class instances matching the thesis, as Rules. Config in, rules out."""
+    from core import search as web_search
+
+    out: list[Rule] = []
+    for cls, instance in web_search.instances_for_sectors(sectors):
+        source_ids, domains = web_search.instance_channel(instance)
+        if not source_ids:
+            continue
+        weight = instance.get("weight")
+        out.append(
+            Rule(
+                rule_id=str(instance["id"]),
+                question=str(instance.get("question") or cls.get("question") or instance["id"]),
+                weight=float(weight) if isinstance(weight, (int, float)) else 1.0,
+                requires=None,
+                check=_instance_check(instance, source_ids, domains),
+                # The channel gate. Not "does this founder have a filing" -- "could we
+                # have seen one at all". No reachable channel means the question was
+                # never asked, which is UNKNOWN and must cost nothing.
+                applicable_when=_channel_reachable(source_ids, domains),
+            )
+        )
+    return out
+
+
+def _channel_reachable(
+    source_ids: frozenset[str], domains: frozenset[str]
+) -> Callable[[Sequence[Event], datetime], bool]:
+    def applicable(events: Sequence[Event], as_of: datetime) -> bool:
+        return bool(_in_channel(events, source_ids, domains))
+
+    return applicable
+
+
+def _active_rules() -> list[Rule]:
+    """RULES, plus the career-history rules only while the flag is on, plus the
+    evidence-class instances the ACTIVE THESIS's sectors reach.
+
+    Both extensions are read per call rather than cached at import, so a test or a
+    measurement run can change the thesis or toggle the flag without reloading the
+    module — and so that reverting either genuinely restores the previous behaviour
+    in a live process.
+
+    With the shipped AI-infra thesis this returns `RULES` itself, unchanged and by
+    identity: no evidence-class instance is declared for a software sector, because
+    the software instance of every class is the rules already in `RULES`.
     """
     from sourcing.linkedin import career_history_signals_enabled
 
+    from core import search as web_search
+
+    extra: list[Rule] = []
     if career_history_signals_enabled():
-        return [*RULES, *CAREER_HISTORY_RULES]
-    return RULES
+        extra.extend(CAREER_HISTORY_RULES)
+    extra.extend(_sector_rules(web_search.active_sectors()))
+    return [*RULES, *extra] if extra else RULES
 
 
 # ---------------------------------------------------------------------------
@@ -816,6 +997,68 @@ def is_impeached(event: Event) -> bool:
     return bool(set(event.integrity_flags) & IMPEACHING_FLAGS)
 
 
+def _corroboration_reading(events: Sequence[Event]) -> dict:
+    """How many INDEPENDENT witnesses stand behind this founder's evidence.
+
+    This exists because of what `memory/score.py`'s source table used to say. It
+    priced `github 0.6 / arxiv 0.7 / web 1.0 / deck 2.0`, which reads as "code is
+    more trustworthy" — true for a company whose product is code and false in
+    general. The only channel a non-technical founder has was, by construction, the
+    noisiest one available, and no amount of independent confirmation could move it.
+
+    The defensible axis is orthogonal to code: is this the founder talking about
+    themselves, or did somebody who did not have to confirm it. A channel counts as
+    an independent witness when it is neither SELF-ATTESTED (the deck is founder
+    prose; a MANUAL event is us) nor SELF-PUBLISHED (a domain the founder controls,
+    per `core.search.SELF_PUBLISHED_HINTS`). Two events from one channel are one
+    witness, following `data/traits.json`'s corroboration rule rather than inventing
+    a second definition of independence.
+
+    This returns FACTS. `memory/score.py` decides what they are worth.
+    """
+    from core.search import is_self_published
+
+    witnesses = {
+        str(event.source)
+        for event in events
+        if event.source not in _SELF_ATTESTED_SOURCES and not is_self_published(event.source_url)
+    }
+    return {
+        "independent_channels": len(witnesses),
+        "independent_channel_ids": sorted(witnesses),
+        # Everything we hold is the founder describing themselves. Not a judgement
+        # about quality — a statement that nobody else has said anything yet.
+        "self_published_only": not witnesses and bool(events),
+    }
+
+
+def _coverage_reading() -> dict | None:
+    """Whether this registry can actually SEE the sectors the thesis invests in.
+
+    Carried on the rollup so a thin dossier can be read correctly downstream.
+    `data/sources.json` has always documented exactly whom it misses — closed-source
+    defence and healthcare work, hardware, wet-lab — and that text lived in a config
+    file no user of this system ever saw, so a founder we could not observe and a
+    founder we observed to be weak arrived at the reader looking identical. Attaching
+    it to the reading is what lets the output say "we could not see them".
+    """
+    try:
+        from core import search as web_search
+
+        coverage = web_search.registry_coverage()
+    except Exception:  # noqa: BLE001 — a coverage note is never worth failing a score for
+        return None
+    if not coverage.get("sectors"):
+        return None
+    return {
+        "sectors": coverage["sectors"],
+        "n_sources": coverage["n_sources"],
+        "n_domains": coverage["n_domains"],
+        "thinly_covered_sectors": coverage["thinly_covered_sectors"],
+        "caveat": coverage["caveat"],
+    }
+
+
 def evaluate_events(events: list[Event], entity_id: UUID, as_of: datetime) -> list[Event]:
     """Pure core: as_of-scoped events in, one GREEN_FLAG event per APPLICABLE rule out.
 
@@ -844,7 +1087,10 @@ def evaluate_events(events: list[Event], entity_id: UUID, as_of: datetime) -> li
             continue
         # Same principle as `requires`, one level finer: a rule whose source the
         # founder does not have is NOT evaluated, so its absence cannot lower y_t.
-        if rule.requires_source_id is not None and rule.requires_source_id not in present_source_ids:
+        if (
+            rule.requires_source_id is not None
+            and rule.requires_source_id not in present_source_ids
+        ):
             continue
         # Time-dependent applicability: a window that has not elapsed cannot be
         # judged, so the rule is skipped rather than failed. "Too recent to tell"
@@ -936,6 +1182,8 @@ def evaluate(
     # actual error the guard was reaching for.
     company_id = next(iter(company_ids), None) if len(company_ids) == 1 else None
     self_consistency = sum(event.confidence for event in per_rule) / max(len(per_rule), 1)
+    corroboration = _corroboration_reading(scoped)
+    coverage = _coverage_reading()
     source_evidence_ids = sorted(
         {
             str(evidence_id)
@@ -959,6 +1207,8 @@ def evaluate(
             "observation_role": "rollup",
             "derived_from_event_ids": [str(event.event_id) for event in per_rule],
             "source_evidence_event_ids": source_evidence_ids,
+            **corroboration,
+            "evidence_coverage": coverage,
         },
         evidence_span=f"{len(fired)}/{len(per_rule)} applicable green flags fired",
         confidence=self_consistency,

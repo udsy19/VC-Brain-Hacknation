@@ -53,6 +53,16 @@ create table if not exists companies (
     name               text not null,
     founder_entity_ids text not null default '[]',   -- json array of uuid strings
     archetype          integer,                      -- 1..6, seed data only
+    -- 'sourced' = evidence collected from the outside world; 'constructed' = evidence
+    -- authored for this repo (archetype scenarios, backtest synthetic controls). Not
+    -- nullable: see schema/migrations/006_company_provenance.sql for why.
+    --
+    -- AND NO DEFAULT: see 007_company_provenance_no_default.sql. It defaulted to
+    -- 'sourced', so any insert omitting the column silently claimed evidence-backing.
+    -- With no default such an insert fails the not-null constraint instead, which is
+    -- the outcome you want from a writer that has not decided what it is writing.
+    provenance         text not null
+                       check (provenance in ('sourced', 'constructed')),
     created_at         text not null
 );
 

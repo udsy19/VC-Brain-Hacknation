@@ -38,6 +38,9 @@ from schema.vc import (
     AXIS_SIGNALS,
     SURVEY_BY_ID,
     SURVEY_QUESTIONS,
+    AuthoredLens,
+    AuthoredLensPatch,
+    AuthoredLensWrite,
     AxisWeights,
     Choice,
     ConvictionStyle,
@@ -47,6 +50,7 @@ from schema.vc import (
     GapFinding,
     GapReport,
     GapUncomputable,
+    LensOrigin,
     NotInferred,
     PastDecision,
     Prior,
@@ -157,6 +161,24 @@ create table if not exists vc_decisions (
 );
 
 create index if not exists idx_vc_decisions_profile on vc_decisions (profile_id);
+
+create table if not exists vc_authored_lenses (
+    lens_id    text primary key,
+    profile_id text not null references vc_profiles(profile_id),
+    name       text not null,
+    quality    text not null,
+    persona    text not null,
+    weight     real not null check (weight >= 0.01 and weight <= 1.0),
+    origin     text not null check (origin in ('authored', 'template')),
+    created_at text not null,
+    updated_at text not null
+);
+
+create unique index if not exists idx_vc_authored_lenses_profile_name
+    on vc_authored_lenses (profile_id, lower(trim(name)));
+
+create index if not exists idx_vc_authored_lenses_profile
+    on vc_authored_lenses (profile_id, created_at);
 """
 
 _ensured: dict[int, Any] = {}
@@ -502,6 +524,175 @@ def get_decisions(user_id: UUID) -> list[PastDecision]:
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# §3 — user-authored council lenses
+#
+# These are the THIRD input, and they are deliberately not merged into either of the
+# other two. The survey is what the VC said, the decision history is what the VC did,
+# and an authored lens is what the VC *asked for* — a direct instruction, not an
+# inference from either source. `derive()` does not read this table, which is what makes
+# the guarantee below true by construction rather than by care:
+#
+#     RE-DERIVING A PROFILE NEVER TOUCHES AN AUTHORED LENS.
+#
+# A survey change recomputes the derived lenses and their weights. It cannot create,
+# edit, reweight or delete an authored one, because derivation has no write path here
+# and no read path either. What re-deriving CAN do is change how many derived lenses
+# compete for the remaining seats under the ceiling — and `compose_council` reports that
+# displacement in `not_derived` by name rather than letting a lens quietly vanish.
+#
+# NOTHING IN HERE CREATES A LENS IMPLICITLY. There is no ensure_*, no default set and no
+# seeding. A profile with no authored lenses has none, and that is a real state.
+# ---------------------------------------------------------------------------
+
+
+def _authored_row(row: dict) -> AuthoredLens:
+    return AuthoredLens(
+        lens_id=UUID(str(row["lens_id"])),
+        profile_id=UUID(str(row["profile_id"])),
+        name=row["name"],
+        quality=row["quality"],
+        persona=row["persona"],
+        weight=float(row["weight"]),
+        origin=LensOrigin(str(row["origin"])),
+        created_at=db.from_iso(row["created_at"]),
+        updated_at=db.from_iso(row["updated_at"]),
+    )
+
+
+def list_authored_lenses(user_id: UUID) -> list[AuthoredLens]:
+    """Every council agent this user has authored, oldest first.
+
+    Creation order, not weight order: the council builder is a list the VC maintains,
+    and reordering it under them on every weight tweak would make an edit feel like a
+    reshuffle. Weight ordering is the scorer's business, not the editor's.
+    """
+    row = _profile_row(user_id)
+    if not row:
+        return []
+    return [
+        _authored_row(r)
+        for r in fetch(
+            "select * from vc_authored_lenses where profile_id = ? order by created_at, lens_id",
+            (str(row["profile_id"]),),
+        )
+    ]
+
+
+def get_authored_lens(user_id: UUID, lens_id: UUID) -> AuthoredLens | None:
+    """Scoped to the owning profile, so an id guessed from another account reads as
+    absent rather than as someone else's council agent."""
+    row = _profile_row(user_id)
+    if not row:
+        return None
+    rows = fetch(
+        "select * from vc_authored_lenses where profile_id = ? and lens_id = ?",
+        (str(row["profile_id"]), str(lens_id)),
+    )
+    return _authored_row(rows[0]) if rows else None
+
+
+def _name_taken(profile_id: UUID, name: str, *, excluding: UUID | None = None) -> bool:
+    rows = fetch(
+        "select lens_id, name from vc_authored_lenses where profile_id = ?", (str(profile_id),)
+    )
+    target = name.strip().lower()
+    return any(
+        str(r["name"]).strip().lower() == target
+        and (excluding is None or str(r["lens_id"]) != str(excluding))
+        for r in rows
+    )
+
+
+def create_authored_lens(user_id: UUID, body: AuthoredLensWrite) -> AuthoredLens:
+    """Store one agent. Raises ValueError on a duplicate name.
+
+    Duplicate names are refused rather than de-duplicated with a suffix: the ranking
+    explanation names the lens that moved a company, and two agents called the same
+    thing make that explanation unusable.
+    """
+    profile_id = ensure_profile(user_id)
+    if _name_taken(profile_id, body.name):
+        raise ValueError(
+            f"you already have a council agent called {body.name!r} — the ranking "
+            "explanation names the agent that moved a company, so names must be distinct"
+        )
+    now = _now()
+    lens_id = uuid4()
+    write(
+        "insert into vc_authored_lenses (lens_id, profile_id, name, quality, persona, "
+        "weight, origin, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(lens_id),
+            str(profile_id),
+            body.name,
+            body.quality,
+            body.persona,
+            float(body.weight),
+            str(body.origin),
+            _iso(now),
+            _iso(now),
+        ),
+    )
+    return AuthoredLens(
+        lens_id=lens_id,
+        profile_id=profile_id,
+        name=body.name,
+        quality=body.quality,
+        persona=body.persona,
+        weight=float(body.weight),
+        origin=body.origin,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def update_authored_lens(
+    user_id: UUID, lens_id: UUID, patch: AuthoredLensPatch
+) -> AuthoredLens | None:
+    """Partial edit. None means "not supplied", so a PUT that only moves the weight
+    slider does not blank the persona. Returns None if this user has no such lens."""
+    existing = get_authored_lens(user_id, lens_id)
+    if existing is None:
+        return None
+    if patch.name is not None and _name_taken(existing.profile_id, patch.name, excluding=lens_id):
+        raise ValueError(f"you already have a council agent called {patch.name!r}")
+
+    sets, args = [], []
+    for field in ("name", "quality", "persona"):
+        value = getattr(patch, field)
+        if value is not None:
+            sets.append(f"{field} = ?")
+            args.append(value)
+    if patch.weight is not None:
+        sets.append("weight = ?")
+        args.append(float(patch.weight))
+    if patch.origin is not None:
+        sets.append("origin = ?")
+        args.append(str(patch.origin))
+    now = _now()
+    sets.append("updated_at = ?")
+    args.extend([_iso(now), str(existing.profile_id), str(lens_id)])
+    write(
+        f"update vc_authored_lenses set {', '.join(sets)} where profile_id = ? and lens_id = ?",
+        args,
+    )
+    return get_authored_lens(user_id, lens_id)
+
+
+def delete_authored_lens(user_id: UUID, lens_id: UUID) -> bool:
+    """True if a row was removed. A delete is permanent — there is no soft-delete flag,
+    because a council agent the VC removed but that still scores is exactly the kind of
+    invisible input this layer exists to rule out."""
+    if get_authored_lens(user_id, lens_id) is None:
+        return False
+    write(
+        "delete from vc_authored_lenses where profile_id = ? and lens_id = ?",
+        (str(ensure_profile(user_id)), str(lens_id)),
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------

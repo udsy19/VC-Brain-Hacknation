@@ -455,6 +455,141 @@ class ProfileUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# §3 — user-authored council lenses
+#
+# THE DISTINCTION THIS SECTION EXISTS TO HOLD. A derived lens is an INFERENCE: the
+# system read it out of survey answers or uploaded decisions, and it must name the
+# profile field that justified it. An authored lens is a STATEMENT: the VC typed it,
+# and there is no profile field behind it because there was never an inference. Faking
+# a profile field for an authored lens would merge the stated and the derived sides of
+# the profile into one blob, which is the one thing §0 forbids — the stated-vs-revealed
+# gap is only computable while the two remain separable.
+#
+# So `LensOrigin` is a first-class field, "derived" is NOT a value any client can send,
+# and the storage layer's CHECK constraint makes an authored row that claims to be
+# derived impossible rather than merely discouraged.
+#
+# AND: nothing here is ever created implicitly. There is no default council, no seeded
+# lens and no auto-accepted template. `origin` has no default precisely so that a client
+# must state whether the VC typed this or knowingly accepted a template — both are real
+# input, and which one it was is a fact about the user we do not get to guess.
+# ---------------------------------------------------------------------------
+
+
+class LensOrigin(StrEnum):
+    """How a council lens came to exist.
+
+    DERIVED is produced only by `intelligence.custom_council.derive_lenses` from profile
+    fields. It is deliberately unreachable from any request body: see `AuthoredLensWrite`.
+    """
+
+    DERIVED = "derived"
+    #: The VC typed this one from scratch.
+    AUTHORED = "authored"
+    #: The VC knowingly accepted a template and (possibly) edited it. Still real input —
+    #: they chose it — but a different basis from typing it, and the record says which.
+    TEMPLATE = "template"
+
+
+#: The origins a user is allowed to author. "derived" is the system's word.
+AUTHORABLE_ORIGINS = (LensOrigin.AUTHORED, LensOrigin.TEMPLATE)
+
+#: An authored weight of exactly 0 is not a lens, it is a deleted lens with extra steps.
+#: The council refuses it rather than storing a seat that contributes nothing.
+MIN_AUTHORED_WEIGHT = 0.01
+
+
+def _nonblank(value: str, field: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"{field} cannot be blank — an unnamed council agent is not authorable")
+    return text
+
+
+class AuthoredLensWrite(BaseModel):
+    """A create/replace body for one authored council agent.
+
+    `origin` is required and constrained to `AUTHORABLE_ORIGINS`, so no request body can
+    mint a lens that claims the system derived it.
+    """
+
+    name: str = Field(max_length=120)
+    #: The quality this agent adds score for. It is not decoration: the council reads
+    #: this against the company's filtered evidence graph, so a lens whose quality
+    #: carries no readable term would be a seat that measures nothing.
+    quality: str = Field(max_length=120)
+    persona: str = Field(max_length=4000)
+    weight: float = Field(ge=MIN_AUTHORED_WEIGHT, le=1.0)
+    origin: LensOrigin
+
+    @field_validator("name", "quality", "persona")
+    @classmethod
+    def _text(cls, v: str, info) -> str:
+        return _nonblank(v, info.field_name)
+
+    @field_validator("origin")
+    @classmethod
+    def _authorable(cls, v: LensOrigin) -> LensOrigin:
+        if v not in AUTHORABLE_ORIGINS:
+            raise ValueError(
+                "origin must be 'authored' or 'template'; 'derived' is reserved for lenses "
+                "the system read out of your profile and cannot be claimed by a client"
+            )
+        return v
+
+
+class AuthoredLensPatch(BaseModel):
+    """A partial edit. An omitted field is left alone rather than cleared."""
+
+    name: Optional[str] = Field(default=None, max_length=120)
+    quality: Optional[str] = Field(default=None, max_length=120)
+    persona: Optional[str] = Field(default=None, max_length=4000)
+    weight: Optional[float] = Field(default=None, ge=MIN_AUTHORED_WEIGHT, le=1.0)
+    origin: Optional[LensOrigin] = None
+
+    @field_validator("name", "quality", "persona")
+    @classmethod
+    def _text(cls, v: Optional[str], info) -> Optional[str]:
+        return None if v is None else _nonblank(v, info.field_name)
+
+    @field_validator("origin")
+    @classmethod
+    def _authorable(cls, v: Optional[LensOrigin]) -> Optional[LensOrigin]:
+        if v is not None and v not in AUTHORABLE_ORIGINS:
+            raise ValueError("origin must be 'authored' or 'template'")
+        return v
+
+
+class AuthoredLens(BaseModel):
+    """One stored council agent, owned by a profile.
+
+    This is MUTABLE state, like the rest of the profile and for the same reason recorded
+    in migration 002: the user edits it, and an edit is not an observation about the
+    world, so it does not belong in the append-only event log.
+    """
+
+    lens_id: UUID
+    profile_id: UUID
+    name: str
+    quality: str
+    persona: str
+    weight: float = Field(ge=MIN_AUTHORED_WEIGHT, le=1.0)
+    origin: LensOrigin
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("origin")
+    @classmethod
+    def _never_derived(cls, v: LensOrigin) -> LensOrigin:
+        if v == LensOrigin.DERIVED:
+            raise ValueError(
+                "a stored authored lens can never carry origin 'derived' — it would let a "
+                "lens the VC typed masquerade as one read out of their answers"
+            )
+        return v
+
+
+# ---------------------------------------------------------------------------
 # §2.3 — the stated-vs-revealed gap
 # ---------------------------------------------------------------------------
 

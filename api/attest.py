@@ -37,31 +37,74 @@ SELF_REPORTABLE = (
 )
 
 # Server-side record of when each challenge was issued AND who it was issued to.
-# In-process is fine for a demo; the point is that the anchor is ours, not the
-# client's. The company is recorded so a submission cannot be graded against a
-# different company than the challenge was written for.
+# The point is that the anchor is OURS, not the client's. The company is recorded so a
+# submission cannot be graded against a different company than the challenge was
+# written for.
+#
+# IN POSTGRES (migration 008), not in process memory. Issue and submission are two
+# separate HTTP requests, and on serverless they land on different lambdas — so an
+# in-process dict meant the grader found no record at all. That is not a neutral
+# failure: with no server observation of the issue time, `elapsed` falls back to the
+# founder's own `started_at`, which is the exact substitution this module exists to
+# prevent. The dict remains as a fallback for when the database cannot answer.
 _ISSUED: dict[str, tuple[datetime, str | None]] = {}
 
 
 def record_issue(
     challenge_id: str, issued_at: datetime | None = None, company_id: str | None = None
 ) -> None:
-    _ISSUED[str(challenge_id)] = (issued_at or utcnow(), str(company_id) if company_id else None)
+    from core import state
+
+    when = issued_at or utcnow()
+    company = str(company_id) if company_id else None
+    _ISSUED[str(challenge_id)] = (when, company)
+    state.write(
+        "insert into proof_challenges (challenge_id, company_id, issued_at) "
+        "values (?, ?, ?) on conflict (challenge_id) do nothing",
+        (str(challenge_id), company, when.isoformat()),
+    )
+
+
+def _row(challenge_id: str) -> tuple[datetime, str | None] | None:
+    """The issue record, preferring process memory (same lambda, no round trip) and
+    falling back to the shared table (a different lambda, or a restarted process)."""
+    rec = _ISSUED.get(str(challenge_id))
+    if rec is not None:
+        return rec
+
+    from core import state
+    from memory import db
+
+    rows = state.fetch(
+        "select company_id, issued_at from proof_challenges where challenge_id = ?",
+        (str(challenge_id),),
+    )
+    if not rows:
+        return None
+    try:
+        when = db.from_iso(rows[0]["issued_at"])
+    except Exception:  # noqa: BLE001 - an unparseable anchor is no anchor
+        return None
+    company = rows[0].get("company_id")
+    return (when, str(company) if company else None)
 
 
 def issued_at(challenge_id: str) -> datetime | None:
-    rec = _ISSUED.get(str(challenge_id))
+    rec = _row(challenge_id)
     return rec[0] if rec else None
 
 
 def issued_company(challenge_id: str) -> str | None:
-    rec = _ISSUED.get(str(challenge_id))
+    rec = _row(challenge_id)
     return rec[1] if rec else None
 
 
 def reset() -> None:
     """Test/demo hook."""
+    from core import state
+
     _ISSUED.clear()
+    state.write("delete from proof_challenges")
 
 
 def challenge_belongs_to(challenge_id: str, company_id: UUID | None) -> bool | None:
@@ -117,7 +160,7 @@ def attest(
         observed["elapsed_seconds"] = round((now - issued).total_seconds(), 1)
         attested += ["started_at", "elapsed_seconds"]
 
-    fetched = _fetch_commits(repo_url) if repo_url else None
+    fetched, repo_status = _fetch_commits(repo_url) if repo_url else (None, "no_repo_given")
     if fetched is not None:
         observed["commits"] = fetched
         attested.append("commits")
@@ -129,12 +172,16 @@ def attest(
         "challenge_anchored": issued is not None,
         "attested_fields": attested,
         "self_reported_fields": self_reported,
+        # Why there are no attested commits, when there are none. A repo that genuinely
+        # does not exist and a repo we failed to ask about correctly are different
+        # findings, and reading identically is what let the wrong-endpoint bug survive.
+        "repo_status": repo_status,
         # A trace with no server-side anchor cannot be placed in time at all. It is
         # still graded — refusing outright would punish a founder for our plumbing —
         # but it never counts as observed behaviour.
         "trust": _trust(issued is not None, bool(fetched), self_reported, demo),
         "demo_seeded": demo,
-        "note": _note(issued is not None, bool(fetched), self_reported, demo),
+        "note": _note(issued is not None, repo_status, self_reported, demo),
     }
     # The grader needs this BEFORE scoring, not just afterwards: a self-reported
     # pushback must not earn the same scalar as an observed one. Post-grade
@@ -156,7 +203,21 @@ def _trust(anchored: bool, has_repo: bool, self_reported: list[str], demo: bool)
     return round(min(trust, 1.0), 2)
 
 
-def _note(anchored: bool, has_repo: bool, self_reported: list[str], demo: bool) -> str:
+# Why the commit evidence is missing, in the words the memo and the UI will show.
+_REPO_NOTE = {
+    "attested": "Commits fetched independently from the public repository.",
+    "no_commits": "The repository is reachable but has no commits we could read.",
+    "repo_not_found": "The repository does not exist or is not public — no commit evidence.",
+    "rate_limited": "GitHub rate limit reached before we could read the repository; "
+    "commit evidence is missing on our side, not the founder's.",
+    "fetch_failed": "We could not reach GitHub; commit evidence is missing on our side, "
+    "not the founder's.",
+    "not_a_repo_url": "The submitted repository reference is not a GitHub repository URL.",
+    "no_repo_given": "",
+}
+
+
+def _note(anchored: bool, repo_status: str, self_reported: list[str], demo: bool) -> str:
     if demo:
         return "Seeded demonstration completion. The machinery is real; this run was pre-recorded."
     parts = []
@@ -165,8 +226,8 @@ def _note(anchored: bool, has_repo: bool, self_reported: list[str], demo: bool) 
         if anchored
         else "No server-side issue record — timing is unverified."
     )
-    if has_repo:
-        parts.append("Commits fetched independently from the public repository.")
+    if note := _REPO_NOTE.get(repo_status, ""):
+        parts.append(note)
     if self_reported:
         parts.append(
             "Self-reported and not independently observed: " + ", ".join(self_reported) + "."
@@ -174,24 +235,50 @@ def _note(anchored: bool, has_repo: bool, self_reported: list[str], demo: bool) 
     return " ".join(parts)
 
 
-def _fetch_commits(repo_url: str) -> list[dict] | None:
-    """Commits read from the public repo by us, not asserted by the submitter."""
-    try:
-        from sourcing.scanners import github
+def _fetch_commits(repo_url: str) -> tuple[list[dict] | None, str]:
+    """Commits read from the public repo by us, not asserted by the submitter.
 
-        signals = github.scan(repo_url, limit=50)
-        commits = [
-            {
-                "at": s.meta.get("observed_at") or s.fetched_at.isoformat(),
-                "message": s.meta.get("message", ""),
-                "files": s.meta.get("files", 0),
-            }
-            for s in signals
-            if s.meta.get("kind") in ("commit", "repo_activity")
-        ]
-        return commits or None
-    except Exception:  # noqa: BLE001 - an unreachable repo is unattested, not an error
-        return None
+    Returns (commits, status). The status exists because the previous `None` meant four
+    different things at once — repo does not exist, network down, we built the request
+    wrong, repo exists but is empty — and the third of those was live in production:
+    this called `github.scan(repo_url)`, which treats its argument as a LOGIN, so every
+    attestation asked `GET /users/https://github.com/owner/repo`, took the 404 as
+    "unreachable repo", and dropped its commit evidence silently.
+
+    Commit MESSAGES arrive in RawSignal.content, not meta. Message text is
+    founder-controlled and lands in a trace the memo can quote, so it goes through
+    `bus.prepare()` — the same sanitizer every other ingested string takes (Invariant #4).
+    """
+    from sourcing import bus
+    from sourcing.scanners import github
+
+    try:
+        signals = github.scan_repo(repo_url, limit=50)
+    except ValueError:
+        return None, "not_a_repo_url"
+    except bus.RateLimited:
+        return None, "rate_limited"
+    except bus.FetchError as exc:
+        # 404 is a fact about the submission. Anything else is a fact about us.
+        return None, "repo_not_found" if exc.status == 404 else "fetch_failed"
+    except Exception:  # noqa: BLE001 - still never fatal to a submission
+        return None, "fetch_failed"
+
+    commits = [
+        {
+            # The author date — when the work was done, not when we asked (Invariant #1).
+            # Absent rather than backfilled with ingestion time.
+            "at": s.meta.get("observed_at"),
+            "message": bus.prepare(s).clean_text[:500],
+            "sha": s.meta.get("sha"),
+            "url": s.source_url,
+        }
+        for s in signals
+    ]
+    # `files` used to be read here and the scanner never emitted it, so it was 0 forever.
+    # Populating it costs one GET per commit against a 60/hr budget; the key is dropped
+    # rather than carried as a permanent zero that reads like a measurement.
+    return (commits or None), "attested" if commits else "no_commits"
 
 
 def apply(events: list, attestation: dict) -> list:

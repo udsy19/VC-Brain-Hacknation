@@ -177,6 +177,67 @@ def reset_screening_cache() -> None:
     _SCREENING.clear()
 
 
+# ---------------------------------------------------------------------------
+# VIEWER SCOPE — who is asking, for the purpose of the dissent lock.
+#
+# The storage behind the lock is core.state (migration 008). What lives here is the
+# only part that is HTTP: reading cookies to decide whose lock it is.
+# ---------------------------------------------------------------------------
+
+#: Anonymous viewer identity. Distinct from the auth session cookie: this one confers no
+#: privilege at all and is never a credential — it exists ONLY so that "this browser has
+#: been shown the bear case" is a statement about ONE browser.
+VIEWER_COOKIE = "vcbrain_viewer"
+
+
+def viewer_scope(request: Any, response: Any = None) -> str | None:
+    """The scope the dissent lock is keyed by, or None when there is no per-viewer identity.
+
+    Three cases, in order:
+
+    1. SIGNED IN -> "user:<uuid>". The strongest scope available, and the one that makes
+       the lock follow the person across browsers.
+    2. ANONYMOUS WITH A VIEWER COOKIE -> "viewer:<sha256 of the token>". The demo is
+       driven logged-out, so this is the path that actually runs on stage. The token is
+       minted on the first request that unlocks something and is hashed before storage.
+    3. NO IDENTITY AT ALL -> None, and the caller falls back to process memory.
+
+    Case 3 is not a loophole, it is the honest floor. It happens for a non-browser client
+    (curl, scripts/verify_demo.py) and for local dev, where the dashboard calls
+    http://localhost:8000 cross-origin and fetch's default `credentials: "same-origin"`
+    means no cookie is sent. Local behaviour is therefore EXACTLY what it was before this
+    change — one process, one shared set. In production the frontend is same-origin
+    behind the /api rewrite, so a browser always reaches case 2.
+
+    `response` is passed only on the paths that RECORD an unlock. A read must never mint
+    an identity: doing so would hand every memo request a fresh scope and the lock would
+    read as permanently closed.
+    """
+    from api import auth
+
+    user = auth.optional_user(request)  # documented never to raise
+    if user is not None:
+        return f"user:{user.user_id}"
+
+    token = request.cookies.get(VIEWER_COOKIE)
+    if token:
+        return f"viewer:{auth.token_hash(token)}"
+    if response is None:
+        return None
+
+    token = auth.new_token()
+    response.set_cookie(
+        VIEWER_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=auth._secure_cookies(),
+        max_age=60 * 60 * 24 * 7,
+        path="/",
+    )
+    return f"viewer:{auth.token_hash(token)}"
+
+
 def degrade(live: Callable[[], T], fallback: Callable[[], U]) -> T | U:
     """Run the real module; fall back to fixtures on anything short of a 4xx.
 

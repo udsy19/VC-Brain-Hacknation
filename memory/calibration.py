@@ -84,7 +84,7 @@ class CalibrationReport(BaseModel):
 
 def run_calibration(
     entity_ids: Sequence[UUID | str],
-    evaluation_times: Sequence[datetime],
+    evaluation_times: Sequence[datetime] | Mapping[UUID | str, Sequence[datetime]],
     *,
     labels: Mapping[UUID | str, str | None] | None = None,
     config: CalibrationConfig | None = None,
@@ -94,16 +94,25 @@ def run_calibration(
     ``evaluation_times`` are sorted and de-duplicated. Every trajectory point reads
     ``events(as_of=...)`` and calls ``score.founder(..., as_of=...)`` independently;
     it never derives earlier values by interpolating backward from a final score.
+
+    ``evaluation_times`` may be either one sequence applied to every entity, or a
+    MAPPING of entity id to that entity's own cutoffs. The mapping form exists because
+    a historical cohort does not share a calendar: the backtest cohort spans 2013 to
+    2021, and one shared grid would either score the late members before they had any
+    history — reporting the untouched prior as if it were a reading — or run the early
+    members years past the breakout their cutoff exists to precede, which is lookahead.
+    Per-entity cutoffs let each founder be evaluated on their own timeline, and the
+    label metrics below still compare them all at each one's final cutoff.
     """
-    cutoffs = _ordered_cutoffs(evaluation_times)
     entities = list(dict.fromkeys(_as_uuid(entity_id) for entity_id in entity_ids))
+    cutoffs_by_entity = _cutoffs_by_entity(entities, evaluation_times)
     label_map = _labels(labels)
     report_config = config or CalibrationConfig()
 
     results: list[CalibrationResult] = []
     for entity_id in entities:
         trajectory: list[CalibrationPoint] = []
-        for as_of in cutoffs:
+        for as_of in cutoffs_by_entity[entity_id]:
             raw_events = store.get_store().events(entity_id=entity_id, as_of=as_of)
             observations = score.build_observations(entity_id, as_of)
             founder_score = score.founder(entity_id, as_of)
@@ -146,6 +155,24 @@ def _as_uuid(value: UUID | str) -> UUID:
         return UUID(str(value))
     except (ValueError, TypeError) as exc:
         raise ValueError(f"invalid entity ID: {value!r}") from exc
+
+
+def _cutoffs_by_entity(
+    entities: Sequence[UUID],
+    values: Sequence[datetime] | Mapping[UUID | str, Sequence[datetime]],
+) -> dict[UUID, list[datetime]]:
+    """Resolve shared-grid or per-entity cutoffs into one mapping, validating both."""
+    if isinstance(values, Mapping):
+        by_entity = {_as_uuid(key): _ordered_cutoffs(times) for key, times in values.items()}
+        missing = [entity_id for entity_id in entities if entity_id not in by_entity]
+        if missing:
+            raise ValueError(
+                f"per-entity evaluation times are missing for {len(missing)} entity/entities: "
+                f"{[str(entity_id) for entity_id in missing[:3]]}"
+            )
+        return by_entity
+    shared = _ordered_cutoffs(values)
+    return {entity_id: shared for entity_id in entities}
 
 
 def _ordered_cutoffs(values: Sequence[datetime]) -> list[datetime]:
