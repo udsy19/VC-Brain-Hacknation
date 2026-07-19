@@ -1,0 +1,33 @@
+# Keep pyproject.toml OUT of the deployment.
+#
+# Vercel's Python builder resolves dependencies from pyproject.toml when it is
+# present, in preference to requirements.txt. This project's pyproject declares the
+# full DEV dependency set — including scipy (72MB), anthropic, supabase and uvicorn —
+# which requirements.txt deliberately excludes, with a comment stating that the
+# trimming is what takes the bundle "from ~316MB to well under the limit".
+#
+# So on Vercel the function was being built at ~316MB against the 250MB serverless
+# ceiling. It exceeded the limit, could not start, and returned
+# INTERNAL_FUNCTION_INVOCATION_FAILED with NO Python output at all — no traceback,
+# because no interpreter ever ran. That silence is what made it look like a code bug
+# for several rounds; the build logs were green and the runtime logs were empty.
+#
+# Excluding it here leaves requirements.txt as the only dependency source for the
+# deployment, and changes nothing locally: pyproject still drives uv, pytest and ruff
+# on a developer machine, and nothing at RUNTIME reads it.
+pyproject.toml
+uv.lock
+
+# Not needed by the serverless function.
+#
+# `backtest/` is deliberately NOT here: api/routers/insights.py imports backtest.runner
+# at request time, so excluding it would trade this failure for the next one. Checked
+# rather than assumed — the same lazy-import pattern that hid the missing packages from
+# Vercel's tracer hides them from a reader skimming the imports at the top of a file.
+tests/
+docs/
+data/raw/
+data/backups/
+data/decks/
+data/standout_cache/
+.claude/
