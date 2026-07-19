@@ -46,9 +46,14 @@ export function Poster({
     <section id={id} className={`sheet ${GROUND_CLASS[ground]}`}>
       {/* row 1 — captions + metadata */}
       <div className="grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-        <div className="caption text-[color:var(--muted)] md:col-span-2">
-          <Reveal quiet>{captions}</Reveal>
-        </div>
+        {/* Only rendered when there IS a caption — an empty Reveal still occupies its
+            grid cell and still animates, which on a plate with no caption left a band of
+            dead space above the visual. */}
+        {captions && (
+          <div className="caption text-[color:var(--muted)] md:col-span-2">
+            <Reveal quiet>{captions}</Reveal>
+          </div>
+        )}
         {/* Pinned to column 3 explicitly, or a plate with one caption mis-places it. */}
         <div className="meta text-[color:var(--muted)] md:col-start-3 md:text-right">
           <Reveal quiet>{meta}</Reveal>

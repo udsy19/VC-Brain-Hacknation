@@ -140,13 +140,6 @@ export default function Pitch() {
       {/* ================================================== PLATE 01 — paper */}
       <Poster
         ground="paper"
-        captions={
-          <p>
-            Field study, plate one. Density plot sampled continuously on a nine-pixel
-            lattice. Banding is quantised; intermediate values are not rendered. The
-            pointer acts as a heat source.
-          </p>
-        }
         meta={
           <>
             VC BRAIN
@@ -189,13 +182,16 @@ export default function Pitch() {
       {/* ================================================= PLATE 02 — cobalt */}
       <Poster
         ground="cobalt"
+        /*
+          The only caption left in the sequence, and it survives because it is not a
+          description of the drawing — it is a disclosure about the DATA. Every other
+          plate's caption narrated its own visual to the reader looking at it; this one
+          says the nodes are not real companies, which nothing else on the page says.
+        */
         captions={
           <p>
-            Schematic, plate two. One node per company currently in the screen. Cluster
-            membership is sector; marker radius is the count of contributing evidence
-            events; filled markers cleared the gate. Within-cluster position is seeded
-            and carries no ordinal meaning. Records shown are seeded demonstration
-            companies, not real firms, and no node is labelled with a person.
+            Seeded demonstration records, not real firms. No node is labelled with a
+            person.
           </p>
         }
         meta={
@@ -230,12 +226,6 @@ export default function Pitch() {
       {/* ========================================= PLATE 03 — paper, reading */}
       <Poster
         ground="paper"
-        captions={
-          <p>
-            Reading plate, plate three. No diagram. Registration bar shown for scale
-            reference only.
-          </p>
-        }
         meta={
           <>
             METHOD
@@ -290,13 +280,6 @@ export default function Pitch() {
       {/* =========================================== PLATE 04 — ink, arced */}
       <Poster
         ground="ink"
-        captions={
-          <p>
-            Schematic, plate four. Same records as plate two, redrawn: outlined square
-            markers, quadratic edges, three-neighbour linkage. Inverted ground. Depth is
-            carried by scale and alpha only; nothing here is shaded.
-          </p>
-        }
         meta={
           <>
             TRACE
@@ -329,7 +312,6 @@ export default function Pitch() {
       {/* ================================= PLATE 05 — paper, SILENT (no visual) */}
       <Poster
         ground="paper"
-        captions={<p>Plate five. No diagram on this plate.</p>}
         meta={
           <>
             GAPS
@@ -364,13 +346,6 @@ export default function Pitch() {
       {/* ================================ PLATE 06 — cobalt, field starved */}
       <Poster
         ground="cobalt"
-        captions={
-          <p>
-            Field study, plate six. Same generator as plate one, threshold raised.
-            Painted coverage falls to under a fifth. The surviving cells are that field
-            at the higher cut, not a second drawing.
-          </p>
-        }
         meta={
           <>
             RESULT
