@@ -477,12 +477,12 @@ Work was split by directory so five people could build in parallel without merge
 <td><code>schema/</code> · <code>memory/</code> · <code>core/</code></td>
 </tr>
 <tr>
-<td><b>Rishi Bagri</b> · <a href="https://github.com/rishibagri">@rishibagri</a></td>
+<td><b>Arthur K.</b> · <a href="https://github.com/tech-AK">@tech-AK</a></td>
 <td><b>B</b> — Sourcing & Graph</td>
 <td><code>sourcing/</code></td>
 </tr>
 <tr>
-<td><b>Ayush K.</b> · <a href="https://github.com/tech-AK">@tech-AK</a></td>
+<td><b>Rishi Bagri</b> · <a href="https://github.com/rishibagri">@rishibagri</a></td>
 <td><b>C</b> — Intelligence & Trust</td>
 <td><code>intelligence/</code></td>
 </tr>
