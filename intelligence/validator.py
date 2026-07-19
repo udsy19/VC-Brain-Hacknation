@@ -33,6 +33,51 @@ _PROMPT = (
     "(ISO date/datetime or null). A relation needs a result that directly addresses the claim."
 )
 
+# ---------------------------------------------------------------------------
+# CORROBORATION-ONLY SOURCES — press coverage, admitted HERE and nowhere else.
+#
+# TechCrunch as a SCORE input is the same class as Crunchbase and Product Hunt, both
+# already rejected in docs/SOURCES.md §6, for the same two reasons. Coverage measures PR
+# budget and prior visibility, which is precisely the term `graph.hidden_ranking`
+# SUBTRACTS; and it is lagging — it reports on a founder after they have broken out,
+# which is after the moment this product acts in.
+#
+# For CORROBORATION none of that bites, because verification does not ADD score, it only
+# removes doubt. "The deck claims $2M raised; an independent outlet reports it" moves a
+# claim from NOT_ATTEMPTED to VERIFIED, which is the state transition the four-state
+# validator most lacks. Fame bias cannot enter through a door that only subtracts
+# uncertainty.
+#
+# The distinction is enforced structurally, in three places, none of which is a comment:
+#   1. `sourcing/research.py::Finding.from_fetch` RAISES on a corroboration-only fetch,
+#      so such a document cannot become a Finding and cannot become an Event.
+#   2. `_verdict_event` below stores such a verdict with NO `evidence_span`, so the one
+#      surface that reads arbitrary event text — `intelligence/screen.py::_llm_axis`,
+#      which snippets every event into the axis judge — sees an empty document and drops
+#      it from `valid_ids`. The text lives in the fetch ledger and in the verdict; it is
+#      not in the scoring corpus.
+#   3. `memory/score.py` only observes GREEN_FLAG / PROOF_ARTIFACT / PROOF_BEHAVIOR, and
+#      no rule in `intelligence/flags.py` consumes a VALIDATION_RESULT. A verdict is
+#      therefore incapable of firing a green flag whatever it says.
+# `tests/test_research.py` asserts all three.
+CORROBORATION_SOURCE_IDS = ("techcrunch",)
+
+
+def _corroboration_results(claim_text: str, max_results: int = 3) -> list[SearchResult]:
+    """Independent press coverage of one claim. Discovery is registry-bounded.
+
+    `only_domains` cannot widen the allowlist (see core/search.py), so a source that is
+    not enabled in `data/sources.json` yields nothing here rather than being reachable by
+    the hard-coded id above.
+    """
+    domains = [d for sid in CORROBORATION_SOURCE_IDS for d in web_search.source_domains(sid)]
+    if not domains:
+        return []
+    try:
+        return web_search.search(claim_text, max_results=max_results, only_domains=domains)
+    except Exception:  # noqa: BLE001 - a failed corroboration is UNVERIFIABLE, not a verdict
+        return []
+
 
 def trust_for(status: ClaimStatus, *, self_published: bool = False) -> float:
     """Trust belongs to one claim; it is never aggregated at company level."""
@@ -233,7 +278,11 @@ def check_claims(company_id: UUID, as_of: datetime | None = None) -> list[ClaimV
             except Exception:
                 pass
         claim_text, _ = _claim_fields(claim)
-        results = web_search.search(claim_text) if live_search else stored_results
+        results = (
+            web_search.search(claim_text) + _corroboration_results(claim_text)
+            if live_search
+            else stored_results
+        )
         verdict = check_claim(claim, results)
         verdicts.append(verdict)
         event = _verdict_event(verdict, claim, validated_at=as_of)
@@ -262,6 +311,15 @@ def _verdict_event(verdict: ClaimVerdict, claim: Event, *, validated_at: datetim
             observed_at.isoformat(),
         )
     )
+    # A corroboration-only span is kept in the VERDICT (which is what the memo and the UI
+    # cite) and withheld from the EVENT's `evidence_span`. `screen._llm_axis` snippets
+    # `evidence_span` into the axis judge and drops any event whose text is empty, so this
+    # is the mechanism — not the intention — by which press coverage cannot move a score.
+    # The URL stays: it is the citation trail, and no model is ever shown it.
+    corroboration_only = web_search.is_corroboration_only(verdict.corroborating_url or "")
+    payload = verdict.model_dump(mode="json")
+    if corroboration_only:
+        payload["scoring_eligible"] = False
     return Event(
         event_id=uuid5(NAMESPACE_URL, f"validation:{identity}"),
         entity_id=claim.entity_id,
@@ -270,8 +328,8 @@ def _verdict_event(verdict: ClaimVerdict, claim: Event, *, validated_at: datetim
         source=Source.VALIDATOR,
         source_url=verdict.corroborating_url,
         observed_at=observed_at,
-        evidence_span=verdict.corroborating_span,
-        payload=verdict.model_dump(mode="json"),
+        evidence_span=None if corroboration_only else verdict.corroborating_span,
+        payload=payload,
         confidence=verdict.trust,
     )
 

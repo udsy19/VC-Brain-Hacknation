@@ -333,6 +333,8 @@ def frame(as_of: datetime, *, refresh: bool = False) -> Frame:
             as_of=as_of,
             companies=tuple(_features(r, as_of) for r in _in_scope_companies()),
         )
+    # Persist so a restarted process can reach the summaries keyed by this frame.
+    _save_frame(key, _FRAMES[key])
     return _FRAMES[key]
 
 
@@ -345,7 +347,55 @@ def warm_frame(as_of: datetime) -> Frame | None:
     frame, gets None on a cold process, and honestly marks every row `not_generated`
     rather than making the page wait for a comparison nobody asked for yet.
     """
-    return _FRAMES.get(_bucket(as_of))
+    warm = _FRAMES.get(_bucket(as_of))
+    if warm is not None:
+        return warm
+
+    # A frame persisted by an earlier process counts as warm. Without this, every
+    # summary on disk was unreachable after a restart: `cached()` needs a frame to
+    # key by, so a cold process reported not_generated for thirteen rows that were
+    # already computed and stored. Loading is a file read, not the ~6s rebuild, so
+    # the non-blocking property this function exists to protect is preserved.
+    restored = _load_frame(_bucket(as_of))
+    if restored is not None:
+        _FRAMES[_bucket(as_of)] = restored
+    return restored
+
+
+def _frame_path(bucket: str) -> Path:
+    return cache_dir() / f"frame_{bucket}.json"
+
+
+def _load_frame(bucket: str) -> Frame | None:
+    path = _frame_path(bucket)
+    if not path.exists():
+        return None
+    try:
+        blob = json.loads(path.read_text())
+        # companies is tuple[Features, ...]; json gives back plain dicts, and passing
+        # those straight to Frame() produced an object whose members had no attributes.
+        # It failed silently into "not warm", so thirteen already-computed summaries
+        # were unreachable after every restart while the file sat on disk.
+        return Frame(
+            as_of=datetime.fromisoformat(blob["as_of"]),
+            companies=tuple(Features(**c) for c in blob.get("companies") or []),
+        )
+    except Exception:  # noqa: BLE001 - a stale or malformed frame is simply not warm
+        return None
+
+
+def _save_frame(bucket: str, frame: Frame) -> None:
+    try:
+        cache_dir().mkdir(parents=True, exist_ok=True)
+        _frame_path(bucket).write_text(json.dumps(_frame_as_dict(frame), default=str))
+    except Exception:  # noqa: BLE001 - failing to cache must never fail the request
+        pass
+
+
+def _frame_as_dict(frame: Frame) -> dict:
+    from dataclasses import asdict, is_dataclass
+
+    return asdict(frame) if is_dataclass(frame) else dict(frame.__dict__)
 
 
 def _bucket(as_of: datetime) -> str:

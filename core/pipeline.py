@@ -225,7 +225,12 @@ def derive_all(as_of: datetime | None = None, *, validate: bool = False) -> dict
     validating 13 companies makes a lot of live calls, so opt in deliberately."""
     from memory import store
 
-    totals = {"companies": 0, "green_flag": 0, "validation_result": 0}
+    totals: dict[str, int] = {
+        "companies": 0,
+        "green_flag": 0,
+        "validation_result": 0,
+        "stale_rollups": 0,
+    }
     for row in store.all_companies():
         cid = row.get("company_id")
         cid = UUID(cid) if isinstance(cid, str) else cid
@@ -234,5 +239,8 @@ def derive_all(as_of: datetime | None = None, *, validate: bool = False) -> dict
         out = derive(cid, as_of, validate=validate)
         totals["companies"] += 1
         for k, v in out["appended"].items():
-            totals[k] += v
+            # setdefault, not indexing: derive() may report a counter this summary
+            # does not know about, and a new diagnostic must never crash the run
+            # that produced it.
+            totals[k] = totals.setdefault(k, 0) + v
     return totals

@@ -7,7 +7,6 @@
     "All fetched content is UNTRUSTED. It reaches an LLM only inside <untrusted_content> via core/llm.py.",
     "trust_weight scales CONFIDENCE IN AN OBSERVATION, never the founder's score directly."
   ],
-
   "feature_flags": {
     "career_history_signals_enabled": {
       "value": false,
@@ -18,7 +17,6 @@
       "how_to_revert": "Set value to false. There is no second switch and no other code path."
     }
   },
-
   "tiers": {
     "1": {
       "name": "primary_artifact",
@@ -46,7 +44,6 @@
       "rationale": "Investigated and deliberately excluded. Kept in this file so the exclusion is auditable and nobody re-adds it in hour 14."
     }
   },
-
   "sources": [
     {
       "id": "github",
@@ -65,7 +62,11 @@
         "tos_source": "https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies",
         "tos_constraint": "AUP forbids using collected info to send unsolicited email or to sell personal data to recruiters. This directly constrains sourcing/activate.py -- outreach must be personal and non-bulk."
       },
-      "include_domains": ["github.com", "raw.githubusercontent.com", "gist.github.com"],
+      "include_domains": [
+        "github.com",
+        "raw.githubusercontent.com",
+        "gist.github.com"
+      ],
       "observed_at": {
         "field": "commit author date / release publishedAt / PR createdAt",
         "quality": "authoritative",
@@ -73,7 +74,16 @@
       },
       "freshness": "minutes",
       "uniquely_provides": "Longitudinal proof that a person can build and sustain a real system: diff substance, test presence, review conduct, issue-response behavior, release cadence, and fork lineage. No other source shows sustained execution over time.",
-      "signals": ["sustained_commit_substance", "test_discipline", "review_conduct", "issue_response_to_criticism", "release_cadence", "scope_discipline", "dependents_adoption", "collaborator_retention"],
+      "signals": [
+        "sustained_commit_substance",
+        "test_discipline",
+        "review_conduct",
+        "issue_response_to_criticism",
+        "release_cadence",
+        "scope_discipline",
+        "dependents_adoption",
+        "collaborator_retention"
+      ],
       "failure_modes": [
         "Work-for-hire and enterprise founders commit to private repos; strong builders can show near-zero public activity.",
         "Green-square farming, vendored dependencies, and tutorial forks inflate raw counts -- substance metrics (diff entropy, test presence, file diversity) are mandatory, per B.md burst.py.",
@@ -81,7 +91,12 @@
         "Account renames and deleted repos break URL stability -- pin to commit SHA and node_id, not to path."
       ],
       "bias": {
-        "misses": ["founders in defense/finance/healthcare with closed-source work", "non-code founders (design, GTM, hardware, clinical)", "developers in regions where Gitee or self-hosted GitLab is the norm", "people who build under a pseudonym they do not want linked"],
+        "misses": [
+          "founders in defense/finance/healthcare with closed-source work",
+          "non-code founders (design, GTM, hardware, clinical)",
+          "developers in regions where Gitee or self-hosted GitLab is the norm",
+          "people who build under a pseudonym they do not want linked"
+        ],
         "note": "Highest-yield source AND the largest single driver of the registry's overall bias. Absence here is only meaningful when the founder's own claim implies public code."
       }
     },
@@ -101,7 +116,10 @@
         "scrape_permitted": "Yes for metadata. Metadata is CC0 1.0 and may be freely stored and repurposed. Do NOT rehost PDFs or source files.",
         "tos_source": "https://info.arxiv.org/help/api/tou.html"
       },
-      "include_domains": ["arxiv.org", "export.arxiv.org"],
+      "include_domains": [
+        "arxiv.org",
+        "export.arxiv.org"
+      ],
       "observed_at": {
         "field": "v1 submission date",
         "quality": "authoritative",
@@ -109,7 +127,12 @@
       },
       "freshness": "daily",
       "uniquely_provides": "Evidence of depth on a hard technical problem, and the co-authorship graph -- the highest-quality edge type for B's PPR because co-authorship is verified by a third party at publication time.",
-      "signals": ["technical_depth", "problem_selection", "coauthor_graph_edge", "explains_hard_idea_simply"],
+      "signals": [
+        "technical_depth",
+        "problem_selection",
+        "coauthor_graph_edge",
+        "explains_hard_idea_simply"
+      ],
       "failure_modes": [
         "Author-name collisions are severe for common names and for transliterated names; resolve through A's resolver and keep AMBIGUOUS rather than guessing (B.md).",
         "Author ORDER conventions differ by subfield -- do not infer contribution rank from position.",
@@ -117,7 +140,12 @@
         "Affiliation is present in the metadata and is a pedigree trap. Store it as a PROFILE_FACT; a test must ensure it never reaches a feature name or prompt."
       ],
       "bias": {
-        "misses": ["applied engineers who never publish", "industrial researchers under publication embargo", "fields that publish at conferences without arXiv preprints", "practitioners outside academic-adjacent ML"],
+        "misses": [
+          "applied engineers who never publish",
+          "industrial researchers under publication embargo",
+          "fields that publish at conferences without arXiv preprints",
+          "practitioners outside academic-adjacent ML"
+        ],
         "note": "Systematically over-weights the academic ML pipeline. A dev-tools founder with no papers is entirely normal -- absence is UNKNOWN, never negative."
       }
     },
@@ -136,7 +164,10 @@
         "rate_limit_source": "https://github.com/HackerNews/API",
         "scrape_permitted": "Official API is MIT-licensed and purpose-built for this. Prefer Firebase for items/users; use Algolia only for search, then re-resolve each hit through Firebase to get canonical fields."
       },
-      "include_domains": ["news.ycombinator.com", "hn.algolia.com"],
+      "include_domains": [
+        "news.ycombinator.com",
+        "hn.algolia.com"
+      ],
       "observed_at": {
         "field": "item.time (unix)",
         "quality": "authoritative",
@@ -144,7 +175,14 @@
       },
       "freshness": "near real-time",
       "uniquely_provides": "The single richest SOFT-signal source we have legitimate access to. Long comment histories show, in public and at length: how someone handles being told they are wrong, whether they concede a good counterargument, whether they can explain a hard idea to a non-expert, and whether they answer users or dismiss them. Show HN threads additionally show a shipped artifact plus the founder's live response to hostile critique.",
-      "signals": ["handles_criticism", "explains_hard_idea_simply", "concedes_valid_counterargument", "user_support_conduct", "shipped_artifact_public_launch", "domain_depth_in_discussion"],
+      "signals": [
+        "handles_criticism",
+        "explains_hard_idea_simply",
+        "concedes_valid_counterargument",
+        "user_support_conduct",
+        "shipped_artifact_public_launch",
+        "domain_depth_in_discussion"
+      ],
       "failure_modes": [
         "Overwhelmingly US/EU, English-language, and skewed to a specific ideological and professional subculture. Silence on HN says nothing about a founder.",
         "Karma is a tenure-and-popularity artifact -- it belongs in the VISIBILITY term (subtracted), not the quality term.",
@@ -152,7 +190,11 @@
         "Account-to-person resolution is weak; many handles are unlinkable. Require a corroborating link (profile URL, matching GitHub handle) before attaching to an entity."
       ],
       "bias": {
-        "misses": ["non-English builders", "founders who consider public forums a waste of time", "anyone who joined after the community's growth plateau and thus has thin history"],
+        "misses": [
+          "non-English builders",
+          "founders who consider public forums a waste of time",
+          "anyone who joined after the community's growth plateau and thus has thin history"
+        ],
         "note": "Absence is ALWAYS unknown here. Presence is high-value. This asymmetry should be encoded, not averaged away."
       }
     },
@@ -171,7 +213,14 @@
         "rate_limit_source": "https://docs.pypi.org/api/ ; https://crates.io/data-access ; https://blog.npmjs.org/post/187698412060/acceptible-use.html",
         "scrape_permitted": "Yes via the documented JSON APIs. For crates.io use the database dump, not the crawler."
       },
-      "include_domains": ["npmjs.com", "registry.npmjs.org", "pypi.org", "crates.io", "docs.rs", "libraries.io"],
+      "include_domains": [
+        "npmjs.com",
+        "registry.npmjs.org",
+        "pypi.org",
+        "crates.io",
+        "docs.rs",
+        "libraries.io"
+      ],
       "observed_at": {
         "field": "release upload_time / created_at per version",
         "quality": "authoritative",
@@ -179,14 +228,25 @@
       },
       "freshness": "minutes",
       "uniquely_provides": "The only cheap, machine-readable evidence of USERS ACTUALLY SERVED rather than users claimed. Download counts, reverse-dependency counts, and -- most valuably -- whether the founder kept shipping patch releases after the launch spike, which is maintenance burden nobody carries for a vanity project.",
-      "signals": ["users_actually_served", "maintenance_after_launch", "release_cadence", "semver_discipline", "breaking_change_communication", "dependents_adoption"],
+      "signals": [
+        "users_actually_served",
+        "maintenance_after_launch",
+        "release_cadence",
+        "semver_discipline",
+        "breaking_change_communication",
+        "dependents_adoption"
+      ],
       "failure_modes": [
         "Download counts are dominated by CI robots and mirrors; an order-of-magnitude read is defensible, a precise one is not. PyPI download stats require the BigQuery dataset, not the JSON API.",
         "Trivially gamed at the low end (self-installs in CI). DEPENDENTS -- other people's published packages depending on yours -- is far more expensive to fake and should carry most of the weight.",
         "Registry choice is ecosystem-dependent: a Go, Java, or C++ infra founder has no npm/PyPI footprint at all. Absence is meaningful ONLY within the matching ecosystem."
       ],
       "bias": {
-        "misses": ["Go / Java / C++ / systems founders whose distribution is source or binary", "closed-source or self-hosted distribution", "founders whose product is a service, not a library"]
+        "misses": [
+          "Go / Java / C++ / systems founders whose distribution is source or binary",
+          "closed-source or self-hosted distribution",
+          "founders whose product is a service, not a library"
+        ]
       }
     },
     {
@@ -204,7 +264,17 @@
         "rate_limit_source": "https://docs.pretalx.org/ ; https://sessionize.com/",
         "scrape_permitted": "Public schedule endpoints are published for integration. Per-instance robots.txt must be checked at fetch time -- do not assume."
       },
-      "include_domains": ["pretalx.com", "sessionize.com", "fosdem.org", "usenix.org", "linuxfoundation.org", "kccncna.io", "pycon.org", "rustconf.com", "youtube.com"],
+      "include_domains": [
+        "pretalx.com",
+        "sessionize.com",
+        "fosdem.org",
+        "usenix.org",
+        "linuxfoundation.org",
+        "kccncna.io",
+        "pycon.org",
+        "rustconf.com",
+        "youtube.com"
+      ],
       "observed_at": {
         "field": "session start datetime / conference date",
         "quality": "good",
@@ -212,14 +282,24 @@
       },
       "freshness": "weeks to months",
       "uniquely_provides": "Third-party SELECTION as a proxy for peer respect, plus the single best public artifact for COMMUNICATION ABILITY -- a recorded talk shows whether someone can hold a room and explain a hard idea, which no text source evidences as directly. Regional conference circuits (FOSDEM, PyCon JP, RustFest, local meetups) also surface builders with no GitHub or HN presence.",
-      "signals": ["explains_hard_idea_simply", "peer_selection", "domain_depth_in_discussion", "communication_ability"],
+      "signals": [
+        "explains_hard_idea_simply",
+        "peer_selection",
+        "domain_depth_in_discussion",
+        "communication_ability"
+      ],
       "failure_modes": [
         "CFP selection has well-documented bias toward known names, funded travel, and visa-privileged passports -- a talk is a strong positive, absence is close to meaningless.",
         "Vendor-sponsored slots are purchased, not selected. Distinguish sponsored tracks from CFP-selected tracks or the signal inverts.",
         "Highly fragmented; no central index. Coverage is inherently incomplete and should be reported as such."
       ],
       "bias": {
-        "misses": ["people who cannot travel or obtain visas", "caregivers", "non-native-English speakers at English-language conferences", "anyone whose employer will not fund attendance"],
+        "misses": [
+          "people who cannot travel or obtain visas",
+          "caregivers",
+          "non-native-English speakers at English-language conferences",
+          "anyone whose employer will not fund attendance"
+        ],
         "note": "This is a source where PRESENCE ADDS and ABSENCE MUST BE HARD-CODED AS UNKNOWN. Getting this wrong makes the registry a privilege detector."
       }
     },
@@ -237,7 +317,16 @@
         "rate_limit_status": "n/a",
         "scrape_permitted": "Per-site robots.txt is authoritative and must be checked and RECORDED in the fetch ledger before every fetch."
       },
-      "include_domains": ["substack.com", "medium.com", "dev.to", "hashnode.dev", "ghost.io", "github.io", "bearblog.dev", "write.as"],
+      "include_domains": [
+        "substack.com",
+        "medium.com",
+        "dev.to",
+        "hashnode.dev",
+        "ghost.io",
+        "github.io",
+        "bearblog.dev",
+        "write.as"
+      ],
       "observed_at": {
         "field": "RSS/Atom <published> or JSON-LD datePublished",
         "quality": "soft",
@@ -245,14 +334,23 @@
       },
       "freshness": "days",
       "uniquely_provides": "The best evidence of THINKING QUALITY and scope discipline: a post-mortem describing what the author got wrong, a design doc showing considered alternatives and stated non-goals, a benchmark with a published methodology. Also the primary channel for non-English builders, who blog on regional platforms long before they appear anywhere anglophone.",
-      "signals": ["explains_hard_idea_simply", "intellectual_honesty", "scope_discipline", "problem_selection", "technical_depth"],
+      "signals": [
+        "explains_hard_idea_simply",
+        "intellectual_honesty",
+        "scope_discipline",
+        "problem_selection",
+        "technical_depth"
+      ],
       "failure_modes": [
         "Cheap to generate at volume with an LLM, which has largely destroyed the value of blog EXISTENCE as a signal. Only posts that reference a verifiable artifact -- a repo, a benchmark, a paper -- carry weight.",
         "Backdating is trivial on self-hosted platforms. A blog post's date must never be the sole basis for an as_of-sensitive conclusion.",
         "Highest injection-risk surface in the registry: a founder who knows they are being evaluated can plant instructions. sourcing/sanitize.py is non-optional here."
       ],
       "bias": {
-        "misses": ["builders who publish in closed communities (WeChat, Telegram, private Slack)", "people who simply do not write"]
+        "misses": [
+          "builders who publish in closed communities (WeChat, Telegram, private Slack)",
+          "people who simply do not write"
+        ]
       }
     },
     {
@@ -270,7 +368,17 @@
         "rate_limit_source": "https://qiita.com/api/v2/docs",
         "scrape_permitted": "Qiita has a documented public API. Zenn is RSS-accessible. Gitee/Juejin/V2EX terms are UNVERIFIED -- do not crawl them at volume until someone reads the ToS."
       },
-      "include_domains": ["qiita.com", "zenn.dev", "habr.com", "v2ex.com", "juejin.cn", "gitee.com", "codeberg.org", "sourcehut.org", "gitlab.com"],
+      "include_domains": [
+        "qiita.com",
+        "zenn.dev",
+        "habr.com",
+        "v2ex.com",
+        "juejin.cn",
+        "gitee.com",
+        "codeberg.org",
+        "sourcehut.org",
+        "gitlab.com"
+      ],
       "observed_at": {
         "field": "created_at (Qiita) / RSS published",
         "quality": "good for Qiita, soft elsewhere",
@@ -278,14 +386,22 @@
       },
       "freshness": "days",
       "uniquely_provides": "The only route to the founder this product exists to find. A builder in Tokyo, Sao Paulo, Lagos or Shenzhen may have a deep, sustained, publicly-documented body of work that produces ZERO hits on GitHub-trending, HN, and arXiv. Excluding this tier does not make the registry neutral -- it makes it a detector for Bay-Area-adjacency.",
-      "signals": ["technical_depth", "users_actually_served", "sustained_commit_substance", "domain_depth_in_discussion"],
+      "signals": [
+        "technical_depth",
+        "users_actually_served",
+        "sustained_commit_substance",
+        "domain_depth_in_discussion"
+      ],
       "failure_modes": [
         "Requires non-English processing; naive keyword matching returns nothing and the failure is SILENT, which is the worst kind.",
         "Coverage is thin and uneven -- we cover Japan and Russia and China partially, and Africa, South Asia, Latin America and MENA barely at all. This is stated in coverage_gaps rather than papered over.",
         "Identity resolution across scripts is genuinely hard; keep AMBIGUOUS rather than merging on a transliteration match."
       ],
       "bias": {
-        "misses": ["most of the Global South", "anywhere the primary developer community lives inside a closed messaging app"],
+        "misses": [
+          "most of the Global South",
+          "anywhere the primary developer community lives inside a closed messaging app"
+        ],
         "note": "This source is enabled specifically to REDUCE the registry's bias, not because its data quality is high. It is a deliberate quality-for-coverage trade."
       }
     },
@@ -304,7 +420,9 @@
         "rate_limit_source": "https://huggingface.co/docs/hub/rate-limits",
         "scrape_permitted": "Documented public API; use the huggingface_hub client which handles 429 backoff automatically."
       },
-      "include_domains": ["huggingface.co"],
+      "include_domains": [
+        "huggingface.co"
+      ],
       "observed_at": {
         "field": "repo createdAt / commit dates in the model or dataset repo",
         "quality": "authoritative",
@@ -312,14 +430,22 @@
       },
       "freshness": "minutes",
       "uniquely_provides": "For AI-infra specifically, the artifact that GitHub misses: published models, datasets, evals and Spaces. Downloads and community discussion tabs give an adoption signal for ML work that has no package-registry footprint. Also the partial successor to Papers with Code's paper-to-code linkage.",
-      "signals": ["users_actually_served", "technical_depth", "shipped_artifact_public_launch", "maintenance_after_launch"],
+      "signals": [
+        "users_actually_served",
+        "technical_depth",
+        "shipped_artifact_public_launch",
+        "maintenance_after_launch"
+      ],
       "failure_modes": [
         "Download counts include automated evaluation harnesses and are inflatable.",
         "Uploading someone else's fine-tune is near-zero-cost -- weight ORIGINAL training/eval artifacts and repos with real commit history, not model card presence.",
         "Only covers the ML slice of AI-infra; a founder building an inference runtime or a database may have no presence."
       ],
       "bias": {
-        "misses": ["non-ML infra founders", "closed-weight commercial work"]
+        "misses": [
+          "non-ML infra founders",
+          "closed-weight commercial work"
+        ]
       }
     },
     {
@@ -336,17 +462,33 @@
         "rate_limit_status": "inherits hn",
         "scrape_permitted": "yes, same as hn"
       },
-      "include_domains": ["news.ycombinator.com"],
-      "observed_at": { "field": "item.time", "quality": "authoritative" },
+      "include_domains": [
+        "news.ycombinator.com"
+      ],
+      "observed_at": {
+        "field": "item.time",
+        "quality": "authoritative"
+      },
       "freshness": "near real-time",
       "uniquely_provides": "A dated, public LAUNCH EVENT paired with the founder's unscripted real-time response to strangers attacking their work. This pairing -- artifact plus conduct under fire, both timestamped -- exists nowhere else and is the highest-value soft-signal artifact in the whole registry.",
-      "signals": ["shipped_artifact_public_launch", "handles_criticism", "user_support_conduct", "scope_discipline", "concedes_valid_counterargument"],
+      "signals": [
+        "shipped_artifact_public_launch",
+        "handles_criticism",
+        "user_support_conduct",
+        "scope_discipline",
+        "concedes_valid_counterargument"
+      ],
       "failure_modes": [
         "Comment volume correlates with front-page luck, not quality -- normalize conduct signals by thread size or a lucky launch dominates the assessment.",
         "Sockpuppet supportive comments are possible; weight the FOUNDER'S OWN replies, which are attributable, over crowd reaction, which is not.",
         "Same anglosphere bias as hn."
       ],
-      "bias": { "misses": ["non-English launches", "B2B/enterprise products with no self-serve artifact to show"] }
+      "bias": {
+        "misses": [
+          "non-English launches",
+          "B2B/enterprise products with no self-serve artifact to show"
+        ]
+      }
     },
     {
       "id": "stackoverflow",
@@ -363,17 +505,32 @@
         "rate_limit_source": "https://api.stackexchange.com/docs/throttle",
         "scrape_permitted": "API yes. Content is CC BY-SA, so quoted spans need attribution if displayed."
       },
-      "include_domains": ["stackoverflow.com", "stackexchange.com", "serverfault.com"],
-      "observed_at": { "field": "creation_date (unix)", "quality": "authoritative" },
+      "include_domains": [
+        "stackoverflow.com",
+        "stackexchange.com",
+        "serverfault.com"
+      ],
+      "observed_at": {
+        "field": "creation_date (unix)",
+        "quality": "authoritative"
+      },
       "freshness": "minutes",
       "uniquely_provides": "Explanation quality on a narrow technical question, and a long-tail record of helping strangers -- a genuine soft signal for patience and pedagogy.",
-      "signals": ["explains_hard_idea_simply", "user_support_conduct", "domain_depth_in_discussion"],
+      "signals": [
+        "explains_hard_idea_simply",
+        "user_support_conduct",
+        "domain_depth_in_discussion"
+      ],
       "failure_modes": [
         "Site activity has declined sharply post-LLM; recency is weak and a founder active in 2016 tells you little about them now.",
         "Reputation is overwhelmingly a tenure-and-topic-popularity artifact, not a skill measure -- it is a VISIBILITY term at best.",
         "Answering questions is weakly related to founding a company; the signal-to-effort ratio is the worst of any tier-1/2 candidate."
       ],
-      "bias": { "misses": ["anyone who joined the industry after ~2020"] },
+      "bias": {
+        "misses": [
+          "anyone who joined the industry after ~2020"
+        ]
+      },
       "disabled_reason": "Kept in the registry but OFF by default. The identity-resolution and fetch cost is real, the marginal signal over GitHub and HN is small, and its rate limits are UNVERIFIED. Enable only if a specific founder's footprint is otherwise empty."
     },
     {
@@ -406,10 +563,15 @@
         "Snippets are truncated and may not appear verbatim in the underlying page -- a snippet alone is NOT a citable span.",
         "SEO-farm and LLM-generated pages are common; a result must be promoted to a real fetched document before anything is cited from it."
       ],
-      "bias": { "misses": ["anything behind auth", "anything not indexed", "low-PageRank personal sites -- i.e. exactly the invisible founder"] },
+      "bias": {
+        "misses": [
+          "anything behind auth",
+          "anything not indexed",
+          "low-PageRank personal sites -- i.e. exactly the invisible founder"
+        ]
+      },
       "promotion_rule": "A Tavily result may NEVER be the sole basis for a scored signal. It must be promoted: fetch the URL, record it in the fetch ledger, and cite the fetched document."
     },
-
     {
       "id": "linkedin",
       "name": "LinkedIn",
@@ -444,7 +606,11 @@
       },
       "freshness": "whenever a human last supplied it",
       "uniquely_provides": "Honestly: very little that another source does not evidence better. Its one non-duplicated field is CONTINUOUS EMPLOYMENT DURATION at organisations that publish nothing -- the closed-source founder whose work is structurally invisible to every tier-1 source. That is a real gap (see coverage_gaps) and this is a weak, self-reported patch on it. Note that intelligence/proof.py already exists for exactly that case and answers it with a challenge rather than an inference, which is the stronger remedy.",
-      "signals": ["role_tenure_duration", "role_progression", "self_described_scope"],
+      "signals": [
+        "role_tenure_duration",
+        "role_progression",
+        "self_described_scope"
+      ],
       "bias": {
         "misses": [
           "Founders with no LinkedIn presence at all -- disproportionately non-Western, privacy-conscious, open-source-native, and academic founders. This is the load-bearing miss: absence here is a cultural and regional artifact, not a fact about the founder.",
@@ -541,17 +707,58 @@
         "tos_source": "https://scholar.google.com/robots.txt"
       },
       "rejected_because": "No API, scraping prohibited and technically blocked. Its distinctive field -- citation count -- is a fame-and-tenure metric that would fail SHARED.md's own H12 fame-vs-trajectory gate. arXiv and OpenAlex cover the underlying publication facts through legitimate channels with real v1 timestamps."
+    },
+    {
+      "id": "techcrunch",
+      "name": "TechCrunch",
+      "enabled": true,
+      "tier": 2,
+      "scoring_eligible": false,
+      "event_source": "web",
+      "access": {
+        "kind": "search+fetch",
+        "endpoint": "https://techcrunch.com/",
+        "auth": "none",
+        "rate_limit": "UNVERIFIED -- no published API rate limit; reached via Tavily discovery plus a single direct fetch per promoted URL. Self-impose 1 req/sec.",
+        "rate_limit_status": "UNVERIFIED",
+        "scrape_permitted": "Article pages are publicly served and indexed. Fetch only URLs promoted from a search result, one at a time, with a descriptive User-Agent. Do not crawl.",
+        "tos_source": "https://techcrunch.com/robots.txt"
+      },
+      "include_domains": [
+        "techcrunch.com"
+      ],
+      "observed_at": {
+        "field": "article published date (dateline / og:article:published_time)",
+        "quality": "soft",
+        "note": "Publication date is when the OUTLET wrote, not when the world produced the underlying fact. It is a corroboration timestamp only and must never be used as an artifact's observed_at."
+      },
+      "freshness": "days",
+      "uniquely_provides": "Independent third-party reporting of a funding, launch or hiring event that a founder has ALSO asserted in their deck. Its only use is moving a DECK_CLAIM from NOT_ATTEMPTED to VERIFIED or CONTRADICTED in intelligence/validator.py -- the state transition the four-state validator most lacks.",
+      "signals": [],
+      "scoring_exclusion_rationale": "As a SCORE input this is the same class as crunchbase and producthunt, both rejected below, for the same two reasons. (1) Coverage measures PR budget and prior visibility -- precisely the term graph.hidden_ranking SUBTRACTS -- so admitting it would pull the ranking toward the already-visible founder and invert the product's thesis. (2) It is lagging: it reports on a founder AFTER they have broken out, which is after the moment this product acts in. For CORROBORATION neither objection binds, because verification does not ADD score, it only removes doubt; fame bias cannot enter through a door that only subtracts uncertainty. The distinction is enforced structurally, not by convention: sourcing/research.py::Finding.from_fetch RAISES on a fetch from any source with scoring_eligible:false, so such a document cannot become an Event; intelligence/validator.py::_verdict_event stores the resulting verdict with no evidence_span, so intelligence/screen.py::_llm_axis snippets it to empty and drops it from valid_ids; and no rule in intelligence/flags.py and no kind in memory/score.py OBSERVATION_KINDS consumes a VALIDATION_RESULT. tests/test_research.py asserts all three.",
+      "failure_modes": [
+        "Funding coverage is frequently sourced from the company's own press release, so it corroborates that a claim was MADE publicly, not always that it is independently true.",
+        "Absence of coverage is UNKNOWN and never MEANINGFUL -- most founders this product exists to find have none by construction.",
+        "Article text is UNTRUSTED and reaches an LLM only inside <untrusted_content>."
+      ],
+      "bias": {
+        "misses": [
+          "founders with no press operation, which is the population this product targets",
+          "non-US and non-English startup ecosystems"
+        ],
+        "note": "Enabled for corroboration ONLY. scoring_eligible:false is what makes that enforceable rather than aspirational."
+      }
     }
   ],
-
   "signals": {
     "_scale": "magnitude is a rough weight in [0,1] on the contribution to a single axis, for the per-source attribution UI. absence: MEANINGFUL = its lack is itself evidence; UNKNOWN = its lack tells us nothing; CONDITIONAL = meaningful only if the predicate holds.",
-
     "career_history": [
       {
         "_category_note": "OPT-IN. Every signal in this category is inert unless feature_flags.career_history_signals_enabled is true. All three are SELF-REPORTED with no third party in the loop, so per the registry's standing rule on self-reported evidence they are ingested at low confidence (0.4), which widens observation noise r_t in intelligence/flags.observation() rather than pretending to precision the source does not have. Magnitudes are deliberately the lowest in the registry -- lower than peer_selection (0.3), which was itself set low for the same privilege-detector reason.",
         "id": "role_tenure_duration",
-        "sources": ["linkedin"],
+        "sources": [
+          "linkedin"
+        ],
         "direction": "ADD",
         "magnitude": 0.25,
         "evidences": "Continuous months in a single role, brand-blind. The organisation's NAME is never read -- only the duration between a start and an end date. What it is offered as evidence of: the ability to stay with one hard problem past the point where it stopped being novel, which is the same trait maintenance_after_launch measures from artifacts, and measures far better.",
@@ -562,7 +769,9 @@
       },
       {
         "id": "role_progression",
-        "sources": ["linkedin"],
+        "sources": [
+          "linkedin"
+        ],
         "direction": "ADD",
         "magnitude": 0.2,
         "evidences": "Count of distinct role steps within one organisation over time -- brand-blind and title-string-blind. Offered as evidence that people who worked with them repeatedly chose to give them more responsibility, which is third-party judgement of a kind, but relayed to us solely by the subject.",
@@ -573,7 +782,9 @@
       },
       {
         "id": "self_described_scope",
-        "sources": ["linkedin"],
+        "sources": [
+          "linkedin"
+        ],
         "direction": "ADD",
         "magnitude": 0.15,
         "evidences": "Founder-authored prose describing what they were responsible for. Counted ONLY when the description contains a falsifiable, checkable particular -- a named system, a number with units, an artifact that exists elsewhere -- and cross-referenced against a tier-1 artifact. Unbacked prose scores zero, in keeping with the intellectual_honesty rule that an admission must be falsifiable against another artifact or not count.",
@@ -583,11 +794,13 @@
         "critical_note": "This is UNTRUSTED founder-authored text and reaches an LLM only inside <untrusted_content> via the normal bus path. It is also the signal most sensitive to Anglophone self-promotion norms: the same scope described modestly in a second language scores lower than an inflated English description of less work."
       }
     ],
-
     "technical": [
       {
         "id": "sustained_commit_substance",
-        "sources": ["github", "regional_dev"],
+        "sources": [
+          "github",
+          "regional_dev"
+        ],
         "direction": "ADD",
         "magnitude": 0.8,
         "evidences": "Can this person actually build and keep building. Measured on diff entropy, file diversity, test presence and whether commits touch real logic -- never on commit count.",
@@ -596,7 +809,9 @@
       },
       {
         "id": "test_discipline",
-        "sources": ["github"],
+        "sources": [
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.4,
         "evidences": "Engineering maturity and willingness to do unglamorous work.",
@@ -605,7 +820,13 @@
       },
       {
         "id": "technical_depth",
-        "sources": ["arxiv", "technical_blog", "hf_hub", "conference_talks", "regional_dev"],
+        "sources": [
+          "arxiv",
+          "technical_blog",
+          "hf_hub",
+          "conference_talks",
+          "regional_dev"
+        ],
         "direction": "ADD",
         "magnitude": 0.7,
         "evidences": "Genuine command of a hard problem: a paper, a benchmark with stated methodology, a from-scratch implementation of something non-obvious.",
@@ -614,7 +835,10 @@
       },
       {
         "id": "release_cadence",
-        "sources": ["github", "package_registries"],
+        "sources": [
+          "github",
+          "package_registries"
+        ],
         "direction": "ADD",
         "magnitude": 0.5,
         "evidences": "Shipping rhythm over months. The derivative matters more than the level.",
@@ -623,7 +847,11 @@
       },
       {
         "id": "problem_selection",
-        "sources": ["arxiv", "technical_blog", "github"],
+        "sources": [
+          "arxiv",
+          "technical_blog",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.6,
         "evidences": "Working on something that was hard and non-obvious BEFORE it was consensus. Best measured by comparing observed_at against when the topic became crowded.",
@@ -632,7 +860,10 @@
       },
       {
         "id": "coauthor_graph_edge",
-        "sources": ["arxiv", "github"],
+        "sources": [
+          "arxiv",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.5,
         "evidences": "Third-party-verified collaboration; feeds B's PPR. Damp by 1/n on author count.",
@@ -641,11 +872,14 @@
         "warning": "Proximity to a well-known person must feed PPR ONLY, never a direct score bump -- otherwise it becomes an investor/employer-adjacency proxy and violates Invariant #3 in spirit."
       }
     ],
-
     "soft_business": [
       {
         "id": "handles_criticism",
-        "sources": ["show_hn", "hn", "github"],
+        "sources": [
+          "show_hn",
+          "hn",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.8,
         "evidences": "Public, timestamped, unscripted behavior under attack: a Show HN thread where someone calls the architecture wrong, a GitHub issue where a user reports the tool ate their data. Extract the CRITIC's message and the FOUNDER'S REPLY as a paired span. Classify the reply: engages the substance / concedes / deflects / attacks the critic / silent.",
@@ -655,7 +889,13 @@
       },
       {
         "id": "explains_hard_idea_simply",
-        "sources": ["hn", "technical_blog", "conference_talks", "stackoverflow", "github"],
+        "sources": [
+          "hn",
+          "technical_blog",
+          "conference_talks",
+          "stackoverflow",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.7,
         "evidences": "A README that states the problem before the solution; an HN comment that answers a novice without condescension; a talk that builds intuition before formalism. Scoreable as: does the artifact define its terms, state a non-goal, and give a concrete example.",
@@ -664,7 +904,11 @@
       },
       {
         "id": "users_actually_served",
-        "sources": ["package_registries", "hf_hub", "github"],
+        "sources": [
+          "package_registries",
+          "hf_hub",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.8,
         "evidences": "Not downloads -- DEPENDENTS. Other people's published packages that declare a dependency on yours, third-party repos importing your library, issues filed by strangers with real usage context, forks that diverge rather than mirror.",
@@ -673,7 +917,12 @@
       },
       {
         "id": "scope_discipline",
-        "sources": ["github", "show_hn", "technical_blog", "package_registries"],
+        "sources": [
+          "github",
+          "show_hn",
+          "technical_blog",
+          "package_registries"
+        ],
         "direction": "ADD",
         "magnitude": 0.6,
         "evidences": "Documented NON-GOALS. Closed feature requests with a courteous stated reason. A README that says what the tool deliberately does not do. A v1.0 that is smaller than the v0.x roadmap implied.",
@@ -683,7 +932,12 @@
       },
       {
         "id": "user_support_conduct",
-        "sources": ["github", "hn", "show_hn", "stackoverflow"],
+        "sources": [
+          "github",
+          "hn",
+          "show_hn",
+          "stackoverflow"
+        ],
         "direction": "ADD",
         "magnitude": 0.6,
         "evidences": "Median time-to-first-response on issues from non-collaborators; proportion of stranger-issues answered at all; tone of the answer. Time-to-response is directly computable from the API and needs no LLM judgement.",
@@ -692,7 +946,9 @@
       },
       {
         "id": "hiring_and_collaborator_retention",
-        "sources": ["github"],
+        "sources": [
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.5,
         "evidences": "Can this person attract and KEEP good people. Measured as: number of distinct non-trivial outside contributors, and crucially whether they came back -- contributors with commits spanning >6 months. Merged outside PRs with review conversation shows they can delegate rather than rewrite.",
@@ -702,7 +958,12 @@
       },
       {
         "id": "intellectual_honesty",
-        "sources": ["technical_blog", "hn", "github", "show_hn"],
+        "sources": [
+          "technical_blog",
+          "hn",
+          "github",
+          "show_hn"
+        ],
         "direction": "ADD",
         "magnitude": 0.7,
         "evidences": "A public post-mortem naming their own error. A benchmark that reports the case where their tool LOSES. A comment conceding the counterargument was right. A CHANGELOG entry saying 'this was a mistake, reverting.'",
@@ -711,7 +972,10 @@
       },
       {
         "id": "breaking_change_communication",
-        "sources": ["package_registries", "github"],
+        "sources": [
+          "package_registries",
+          "github"
+        ],
         "direction": "ADD",
         "magnitude": 0.4,
         "evidences": "Semver respected; breaking changes carry a migration guide and a deprecation period. This is empathy for users made legible in a machine-readable artifact.",
@@ -720,7 +984,11 @@
       },
       {
         "id": "shipped_artifact_public_launch",
-        "sources": ["show_hn", "package_registries", "hf_hub"],
+        "sources": [
+          "show_hn",
+          "package_registries",
+          "hf_hub"
+        ],
         "direction": "ADD",
         "magnitude": 0.6,
         "evidences": "A dated moment where they put a working thing in front of strangers and asked for judgement.",
@@ -729,7 +997,11 @@
       },
       {
         "id": "maintenance_after_launch",
-        "sources": ["package_registries", "github", "hf_hub"],
+        "sources": [
+          "package_registries",
+          "github",
+          "hf_hub"
+        ],
         "direction": "ADD",
         "magnitude": 0.7,
         "evidences": "Patch releases and bug fixes landing 3, 6, 12 months AFTER the launch spike. The clearest available separator between a demo and a product.",
@@ -738,7 +1010,10 @@
       },
       {
         "id": "peer_selection",
-        "sources": ["conference_talks", "arxiv"],
+        "sources": [
+          "conference_talks",
+          "arxiv"
+        ],
         "direction": "ADD",
         "magnitude": 0.3,
         "evidences": "A third party with a reputation to protect chose to platform this person.",
@@ -746,11 +1021,16 @@
         "absence": "UNKNOWN, and deliberately weighted LOW because CFP selection is visa-, funding- and network-biased. Treating its absence as negative would make this a privilege detector."
       }
     ],
-
     "integrity_negative": [
       {
         "id": "claim_without_any_artifact",
-        "sources": ["deck", "github", "package_registries", "arxiv", "web_enrichment"],
+        "sources": [
+          "deck",
+          "github",
+          "package_registries",
+          "arxiv",
+          "web_enrichment"
+        ],
         "direction": "SUBTRACT",
         "magnitude": 0.6,
         "evidences": "A specific, checkable technical claim in the deck ('we built a distributed inference scheduler', 'we serve 10k QPS') with zero corroborating artifact across every enabled source after a genuine search attempt.",
@@ -760,7 +1040,9 @@
       },
       {
         "id": "burst_without_substance",
-        "sources": ["github"],
+        "sources": [
+          "github"
+        ],
         "direction": "SUBTRACT",
         "magnitude": 0.5,
         "evidences": "A commit spike with low diff entropy, no test changes, single-file concentration, or whitespace-only churn.",
@@ -770,7 +1052,11 @@
       },
       {
         "id": "injection_attempt",
-        "sources": ["deck", "technical_blog", "web_enrichment"],
+        "sources": [
+          "deck",
+          "technical_blog",
+          "web_enrichment"
+        ],
         "direction": "SUBTRACT",
         "magnitude": 0.9,
         "evidences": "Imperative-to-model phrasing, role tokens, zero-width characters, white-on-white text, base64 blobs in submitted or fetched content.",
@@ -780,7 +1066,6 @@
       }
     ]
   },
-
   "coverage_gaps": {
     "statement": "This registry systematically misses the following people. This list is a deliverable, not a disclaimer -- it should be surfaced in the UI next to any low-evidence assessment so a thin dossier reads as 'we could not see them' rather than 'they are weak'.",
     "misses": [
