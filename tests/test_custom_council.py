@@ -1145,7 +1145,7 @@ def test_the_authored_lens_never_touches_the_core_score(bold) -> None:
     """§0 with an authored council in the loop: the personal layer hands back the core
     numbers it was given, unmodified."""
     views = _views()
-    core, evidence = _core_order(views), _evidence_for(views)
+    evidence = _evidence_for(views)
     lenses = custom_council.compose_council(
         bold, [_authored(name="Security", quality="security_engineering", weight=0.9)]
     ).lenses

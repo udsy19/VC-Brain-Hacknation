@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Callable, Sequence
+from typing import Callable, Sequence
 
 log = logging.getLogger(__name__)
 
