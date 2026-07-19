@@ -487,7 +487,7 @@ Work was split by directory so five people could build in parallel without merge
 <td><code>intelligence/</code></td>
 </tr>
 <tr>
-<td><b>Weronika</b></td> · <a href="https://www.linkedin.com/in/weronika-gorecka/"></a></td>
+<td><b>Weronika Gorecka</b></td> · <a href="https://www.linkedin.com/in/weronika-gorecka/">@weronikagorecka</a></td>
 <td><b>E</b> The Business Brain!</td>
 <td>Worked on the business side of things, as well as pitching and marketing.</td>
 </tr>
