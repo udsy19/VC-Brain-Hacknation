@@ -375,8 +375,17 @@ export const getGap = () => call<GapReport>("/profile/gap");
 // Personal layer
 // ---------------------------------------------------------------------------
 
+/**
+ * The LLM budget, not the query budget. This endpoint replays all 113 companies
+ * through the composed council and measured 10.8s against the deployed backend
+ * on a WARM instance — a cold start pushes it past the 15s query budget, at
+ * which point the pipeline silently rendered "—" for every YOUR RANK while
+ * personalisation was on. The caller treats a failure as "no personal rank",
+ * so an aborted request is indistinguishable from a signed-out visitor; the
+ * budget has to clear the slow case for the distinction to survive.
+ */
 export const getPersonalRank = () =>
-  call<PersonalRanking>("/personal/rank", { timeoutMs: TIMEOUT.query });
+  call<PersonalRanking>("/personal/rank", { timeoutMs: TIMEOUT.llm });
 
 /** One stored authored agent, exactly as `AuthoredLens` serialises on the wire. */
 export interface AuthoredLensRecord {

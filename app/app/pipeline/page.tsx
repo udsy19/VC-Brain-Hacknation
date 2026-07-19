@@ -92,6 +92,10 @@ export default function PipelinePage() {
    * (DIFFERENTIATOR §1). Null here means "core rank only", which the cards state.
    */
   const [personal, setPersonal] = useState<PersonalRanking | null>(null);
+  /** A personal-rank fetch that failed for a signed-IN user. 401 is not this: an
+   *  anonymous visitor has no personal rank to lose, but an authenticated one whose
+   *  fetch died must not see the signed-out rendering with no explanation. */
+  const [personalError, setPersonalError] = useState<string | null>(null);
 
   const [q, setQ] = useState(DEFAULT_QUERY);
   const [queryResult, setQueryResult] = useState<Result<QueryResult> | null>(null);
@@ -141,7 +145,9 @@ export default function PipelinePage() {
       // After the page is renderable, never before. A 401 here is the ordinary
       // anonymous state, not an error, and it must not delay the objective ranking.
       const p = await getPersonalRank();
-      if (live) setPersonal(p.ok ? p.data : null);
+      if (!live) return;
+      setPersonal(p.ok ? p.data : null);
+      setPersonalError(p.ok || p.status === 401 ? null : `/personal/rank: ${p.error}`);
     })();
     return () => {
       live = false;
@@ -487,6 +493,12 @@ export default function PipelinePage() {
         </section>
 
         {/* -------------------------------------------------- the ranked list */}
+        {personalError && (
+          <p className="caption max-w-none text-[color:var(--muted)]">
+            Your personal rank could not be fetched ({personalError}) — the cards show
+            core rank only. This is our outage, not a fact about your council.
+          </p>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="meta text-[color:var(--figure)]">Ranked list</h2>
           <div
