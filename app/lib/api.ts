@@ -283,9 +283,16 @@ export async function getDissent(id: string): Promise<Result<Dissent> | null> {
   const fixture = fx.dissent(id);
   const path = `/companies/${encodeURIComponent(id)}/dissent`;
   try {
-    const live = await get<unknown>(path, TIMEOUT.read);
-    if (isObj(live) && typeof live.bear_case === "string") {
-      return { data: live as unknown as Dissent, source: "live" };
+    // The LLM budget, not the read budget. The council runs three deep roles plus
+    // a chair and measured ~11s; at the 8s read timeout this aborted every time
+    // and the page reported "no dissent exists" for a dissent that was on its way.
+    const live = await get<unknown>(path, TIMEOUT.llm);
+    // The route returns the anti-memo nested under `anti_memo` alongside the
+    // decision and the lock state. Reading `bear_case` off the top level found
+    // nothing, so a valid response still fell through to the fixture.
+    const memo = isObj(live) && isObj(live.anti_memo) ? live.anti_memo : live;
+    if (isObj(memo) && typeof memo.bear_case === "string") {
+      return { data: memo as unknown as Dissent, source: "live" };
     }
     return fixture
       ? { data: fixture, source: "fixture", note: `${path} returned an unreadable dissent` }
