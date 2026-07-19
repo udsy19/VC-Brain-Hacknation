@@ -7,6 +7,7 @@ always starts: a route that 500s at hour 23 is a dead demo beat.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import Body, FastAPI, HTTPException
@@ -14,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routers import auth, companies, insights, outbound, personal, profile
 from api.routers.deps import degrade, pick, resolve_as_of, seed, seed_or
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(title="VC Brain", version="0.1.0")
 app.add_middleware(
@@ -296,7 +299,28 @@ def _ranked_row(row: dict, as_of: datetime, *, compute: bool = False) -> dict:
         "unverified_claims": seeded.get("unverified_claims") or 0,
         "sector_key": seeded.get("sector") or "",
         "archetype_no": archetype_no,
+        # What stood out, IF it has already been computed. Never generated inline —
+        # api/standout.py's comparison plus its one LLM call would be ~90s across
+        # thirteen rows, the same arithmetic that keeps the market axis off this path.
+        # An uncomputed row carries an explicit `status: not_generated` and a null
+        # summary, so the card renders "not yet generated" instead of a blank line that
+        # would read as a finding of nothing.
+        "standout": _standout_for(cid, as_of),
     }
+
+
+def _standout_for(cid, as_of: datetime) -> dict:
+    """The cached standout summary for a row, or the explicit not-generated marker."""
+    from api import standout
+
+    if cid is None:
+        return standout.not_generated("")
+    try:
+        hit = standout.cached(cid, as_of)
+    except Exception as exc:  # noqa: BLE001 - a missing summary must not drop a row
+        log.info("standout unavailable for %s (%s)", cid, exc)
+        hit = None
+    return hit or standout.not_generated(cid)
 
 
 def _gate_for(cid, as_of: datetime, seeded: dict) -> tuple[str | None, str, str | None]:

@@ -116,6 +116,8 @@ These are the harder half and the more valuable, so they get the argument.
 
 **`maintenance_after_launch` (0.7)** — Patch releases landing 3, 6, 12 months after the launch spike. The clearest available separator between a demo and a product, and the best cost-to-signal ratio in the registry: it requires sustained effort against real bug reports over calendar time, which cannot be compressed. This is the one soft signal whose absence is genuinely **MEANINGFUL** — a launch with nothing after it subtracts at 0.5. That is the abandoned-demo detector.
 
+> **Implemented** as `intelligence/flags.py::maintenance_after_launch` (weight 3.0, mapped to the `iteration_velocity` trait). It has **three** outcomes, not two, and the third is the load-bearing one: *fired* (mature launch, maintenance present), *not fired* (mature launch, nothing followed — the abandoned-demo finding), and **NOT APPLICABLE** when the launch is younger than `MAINTENANCE_MATURITY_DAYS` (180) or nothing has launched. Not-applicable rules are skipped via `Rule.applicable_when` and never enter the y_t denominator, because "too recent to tell" is not "abandoned" — treating it as one would be a young-project penalty wearing a quality signal's clothes, and in a pre-seed corpus that is most of the population. The maturity window is set at the 6-month checkpoint rather than the 3-month one: at 90 days a single quiet quarter is indistinguishable from an ordinary release rhythm. On the seeded corpus this lands 13 founders in *fired*, 3 in *not fired*, and 8 in *not applicable*, and every launched founder passes through *not applicable* early in their own checkpoint series.
+
 **`intellectual_honesty` (0.7)** — Performative humility is cheap and increasingly common. What is expensive is a *specific, costly, checkable* admission: the exact benchmark where their tool loses, the exact bug they shipped. **Require the admission to be falsifiable against another artifact, or do not count it.**
 
 **`explains_hard_idea_simply` (0.7)** — LLM assistance has genuinely degraded this for composed text. It holds up far better for **recorded talks and live unscripted Q&A**, where response latency and interactivity make ghostwriting impractical. Weight live/interactive artifacts above composed ones.
@@ -285,7 +287,9 @@ Honesty about what was actually read matters more than a longer list.
 
 Kept on file with reasons so nobody re-adds them at hour 14.
 
-**LinkedIn.** Two independent reasons, either sufficient. *Legal:* [robots.txt](https://www.linkedin.com/robots.txt) states plainly that *"the use of robots or other automated means to access LinkedIn without the express permission of LinkedIn is strictly prohibited"*; `/profile/`, `/me/`, `/connections*` are all disallowed and only LinkedInBot gets `Allow: /`. The hiQ litigation concerned CFAA liability for public data and did not make automated access contract-permissible. *Substantive, and this is the one that matters:* a LinkedIn profile is a self-authored, unverified, employer-and-school-shaped document. Strip the employer brand, the school, and the title inflation — all of which Invariant #3 forbids scoring — and essentially nothing remains that is not better evidenced elsewhere. Tenure dates are the only residue and they are self-reported. **It is a pedigree proxy almost by construction**, and including it would systematically favour the credentialed candidate over the builder, inverting the product's thesis.
+**LinkedIn — NO LONGER REJECTED. Reinstated as tier 3, opt-in, default OFF.** See §6.1 below; this bullet is kept so the original reasoning stays on file.
+
+*The original rejection, unamended:* Two independent reasons, either sufficient. *Legal:* [robots.txt](https://www.linkedin.com/robots.txt) states plainly that *"the use of robots or other automated means to access LinkedIn without the express permission of LinkedIn is strictly prohibited"*; `/profile/`, `/me/`, `/connections*` are all disallowed and only LinkedInBot gets `Allow: /`. The hiQ litigation concerned CFAA liability for public data and did not make automated access contract-permissible. *Substantive, and this is the one that matters:* a LinkedIn profile is a self-authored, unverified, employer-and-school-shaped document. Strip the employer brand, the school, and the title inflation — all of which Invariant #3 forbids scoring — and essentially nothing remains that is not better evidenced elsewhere. Tenure dates are the only residue and they are self-reported. **It is a pedigree proxy almost by construction**, and including it would systematically favour the credentialed candidate over the builder, inverting the product's thesis.
 
 **Crunchbase.** Its core content is funding rounds and investor names — precisely the fields Invariant #3 bans. After that redaction what remains is a self-submitted description and a stale headcount. Worse, it is structurally **lagging**: a company appears there *after* it raises, but this product exists to find the founder before anyone has emailed them. A source whose coverage begins at the moment of institutional validation cannot contribute to pre-institutional discovery. It is also now paywalled — the free API tier was eliminated in 2025 — so there is real cost attached to a source that would be redacted down to near-nothing.
 
@@ -298,6 +302,50 @@ Kept on file with reasons so nobody re-adds them at hour 14.
 **X / Twitter.** Paid API, no free research tier, scraping prohibited. Follower counts and engagement measure audience — the term we subtract. Genuine technical discourse there is near-impossible to separate from performance, and it is the most heavily astroturfed surface considered. Any technical argument that matters will also exist as a repo, a post, or an HN comment: cheaper, better-timestamped, less gamed.
 
 **Google Scholar.** No API, scraping prohibited and technically blocked. Its distinctive field — citation count — is a fame-and-tenure metric that would fail SHARED.md's own **H12 fame-vs-trajectory gate**. arXiv and OpenAlex cover the underlying facts through legitimate channels with real v1 timestamps.
+
+---
+
+### 6.1 LinkedIn, reinstated — what changed, what did not, and what it measured
+
+The product owner decided to include LinkedIn as a scoring source after being shown the objections above. It is implemented in `sourcing/linkedin.py` as **tier 3, `enabled: false`, gated on `feature_flags.career_history_signals_enabled` (default `false`)**. The rejection above was not withdrawn and is still believed correct; the flag exists so the disagreement could be *measured* rather than argued.
+
+**The legal objection was not overridden — it was honoured.** There is no scraper, no headless browser, and no HTTP client anywhere in `sourcing/linkedin.py`; `tests/test_sourcing_linkedin.py::test_module_contains_no_automated_fetcher` reads the module source and fails if one appears. Three access paths only: a user-pasted profile whose fields a human typed or confirmed, an official consented API (`fetch_via_official_api` is the seam a token slots into — it raises today and must never acquire an HTML fallback), or a founder's own data export. The registry entry's `include_domains` is **deliberately empty**, because `core/search.py` builds Tavily's domain allowlist from enabled sources and listing `linkedin.com` there would launder the robots.txt prohibition through a third party.
+
+**Signals** (`signals.career_history` in `data/sources.json`), all `absence: UNKNOWN`, all self-reported, all ingested at confidence 0.4 so observation noise widens rather than pretending to precision:
+
+| signal | direction | magnitude | what it reads |
+|---|---|---|---|
+| `role_tenure_duration` | ADD | 0.25 | months between a start and end date. Brand-blind — the organisation name is never read |
+| `role_progression` | ADD | 0.20 | count of role steps within one organisation. Title strings are never read |
+| `self_described_scope` | ADD | 0.15 | founder-authored prose, counted only when it contains a falsifiable particular |
+
+Absence is enforced structurally, not by convention: each rule carries `requires_source_id="linkedin"`, so for a founder with no supplied profile the rule is **not evaluated at all** and never enters the y_t denominator.
+
+**Measured impact.** 13-company corpus, `as_of` pinned, LinkedIn profiles supplied for the ten non-Type-6 founders and none for `intl-zaryad`, `intl-tantu`, `intl-xiliu` — an asymmetry that mirrors the coverage gap §4 already documents. Measured on y_t, the weighted yes-rate the filter consumes.
+
+| founder | y_off | y_on | Δ |
+|---|---|---|---|
+| Tensorpage | 0.610 | 0.661 | +0.051 |
+| Baseplate Systems | 0.580 | 0.604 | +0.024 |
+| **Tantu Systems (T6)** | 0.574 | 0.574 | **0.000** |
+| **Zaryad Compute (T6)** | 0.574 | 0.574 | **0.000** |
+| **Xiliu Inference (T6)** | 0.556 | 0.556 | **0.000** |
+| Meshledger | 0.509 | 0.603 | +0.094 |
+| Quillstack | 0.455 | 0.552 | +0.097 |
+| Ferrite Labs | 0.309 | 0.414 | +0.105 |
+| Tallwind Metrics | 0.127 | 0.241 | +0.114 |
+| Arcwell Data | 0.109 | 0.224 | +0.115 |
+
+**Each of the three Type 6 founders drops exactly one rank position.** Their scores do not fall — the gating works exactly as designed — but they are displaced as profiled founders rise past them. Meshledger climbs from 6th to 3rd on nothing but a supplied career history.
+
+Two findings the owner should weigh before the equity-thesis demo:
+
+1. **The effect is real but modest per founder, and it is a displacement effect, not a penalty.** One position each. If the demo beat is "Type 6 founders rank in the top five", it survives with the flag on. If it is "rank 2, 4 and 5 specifically", it does not.
+2. **The gain is largest for the thinnest dossiers, which is backwards.** Arcwell (+0.115) and Tallwind (+0.114) gain most; Tensorpage and Baseplate, the founders with the richest artifact evidence, gain least. Because y_t is a normalised yes-rate, three cheap self-reported "yes" answers are a far larger share of a small denominator. The source therefore rewards *having a profile* most where there is least artifact evidence to corroborate it — the opposite of what a substance-only scorer should do.
+
+A caveat on method, stated because it bounds the claim: the seeded corpus ships pre-computed `GREEN_FLAG` rollups and `core/pipeline.derive()` never overwrites an existing event id, so a full end-to-end re-derive silently reuses the seeded rollups and shows no movement. The table above is therefore measured on `flags.observation()` directly, which is the only quantity these rules touch.
+
+**Assessment:** on this evidence the source does not earn its place. Its one non-duplicated contribution — employment duration at organisations that publish nothing — is already better answered by `intelligence/proof.py`, which responds to absent evidence with a challenge rather than an inference. Everything else it offers is evidenced better, and adversarially, elsewhere. It stays off by default.
 
 ---
 

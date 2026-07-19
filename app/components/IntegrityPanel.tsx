@@ -87,12 +87,14 @@ export default function IntegrityPanel({ flags }: { flags: IntegrityFlag[] }) {
                 </>
               )}
 
-              <div className="mt-2 border border-[color:var(--rule)] bg-[color:var(--ink-09)] px-3 py-2">
-                <span className="meta text-[color:var(--muted)]">
-                  Action taken
-                </span>
-                <p className="mt-1 text-[14px] leading-[1.55] text-[color:var(--figure)]">{f.action_taken}</p>
-              </div>
+              {f.action_taken && (
+                <div className="mt-2 border border-[color:var(--rule)] bg-[color:var(--ink-09)] px-3 py-2">
+                  <span className="meta text-[color:var(--muted)]">Action taken</span>
+                  <p className="mt-1 text-[14px] leading-[1.55] text-[color:var(--figure)]">
+                    {f.action_taken}
+                  </p>
+                </div>
+              )}
 
               {/*
                 The control comparison is a claim about the DETECTOR, not about this

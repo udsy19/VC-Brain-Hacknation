@@ -136,11 +136,16 @@ def test_evaluate_keeps_per_rule_contract_and_appends_d_rollup() -> None:
     assert rollup.evidence_span
 
     rows = rollup.payload["flags"]
-    assert len(rows) == len(flags.RULES)
-    assert [row["id"] for row in rows] == [rule.id for rule in flags.RULES]
+    # One row per ACTIVE rule. The active set is RULES, plus the opt-in
+    # career-history rules while career_history_signals_enabled is on — D's trace
+    # must show every rule that actually participated in y_t, including those.
+    # Defaults to RULES, so this is unchanged for the shipped configuration.
+    active = flags._active_rules()
+    assert len(rows) == len(active)
+    assert [row["id"] for row in rows] == [rule.id for rule in active]
     assert all(set(row) == {"id", "fired", "weight", "applicable"} for row in rows)
     by_id = {event.payload["rule_id"]: event for event in per_rule}
-    for rule, row in zip(flags.RULES, rows):
+    for rule, row in zip(active, rows):
         assert row["weight"] == rule.weight
         assert row["applicable"] is (rule.id in by_id)
         assert row["fired"] is (

@@ -26,6 +26,37 @@ log = logging.getLogger(__name__)
 DERIVED_NS = UUID("d1f0a7c2-0000-4000-8000-000000000001")
 
 
+def _supersedes_existing(ev: Event, prior: dict[tuple, set[str]]) -> bool:
+    """Would this event replace a previously derived reading at the same point?"""
+    key = (ev.entity_id, ev.payload.get("rule_id", "rollup"), ev.observed_at)
+    seen = prior.get(key)
+    return bool(seen) and _reading_digest(ev.payload) not in seen
+
+
+def _reading_digest(payload: dict) -> str:
+    """What the rule concluded, not merely that it ran.
+
+    Only the fields that constitute the reading — the scalar and which rules fired.
+    Prose or ordering changes must not mint a new event, or every re-derive would
+    append duplicates at the same timestamp.
+    """
+    import hashlib
+    import json as _json
+
+    fired = payload.get("flags")
+    material = {
+        "value": payload.get("value"),
+        "fired": sorted(
+            (f.get("id"), bool(f.get("fired")))
+            for f in fired
+            if isinstance(f, dict) and f.get("id")
+        )
+        if isinstance(fired, list)
+        else payload.get("fired"),
+    }
+    return hashlib.sha256(_json.dumps(material, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def _stable_id(*parts: object) -> UUID:
     return uuid5(DERIVED_NS, "|".join(str(p) for p in parts))
 
@@ -51,7 +82,15 @@ def derive(
     for entity_id in entities:
         existing |= {e.event_id for e in store.events(as_of=cutoff, entity_id=entity_id)}
 
-    appended = {"green_flag": 0, "validation_result": 0}
+    appended = {"green_flag": 0, "validation_result": 0, "stale_rollups": 0}
+
+    # (entity, rule_id, observed_at) -> the digests already stored, so a changed
+    # reading at an already-derived point is detectable rather than invisible.
+    prior_readings: dict[tuple, set[str]] = {}
+    for entity_id in entities:
+        for ev in store.events(as_of=cutoff, entity_id=entity_id, kind="green_flag"):
+            key = (entity_id, ev.payload.get("rule_id", "rollup"), ev.observed_at)
+            prior_readings.setdefault(key, set()).add(_reading_digest(ev.payload))
 
     # 1. Green flags -> the sensor readings the filter consumes.
     #
@@ -71,14 +110,37 @@ def derive(
                 if not is_rollup and not is_last:
                     continue
                 ev.observed_at = at if is_rollup else ev.observed_at
+                # The derived READING is part of the identity, not just the rule and
+                # the date. Keying on (rule, entity, observed_at) alone meant a changed
+                # rule produced an identical id, `not in existing` skipped it, and the
+                # store silently kept the OLD value — so adding or fixing a rule did
+                # not propagate without a full rebuild, and nothing said so. A new
+                # reading is a new observation; that is what append-only means.
                 ev.event_id = _stable_id(
-                    "flag", entity_id, ev.payload.get("rule_id", "rollup"), ev.observed_at
+                    "flag",
+                    entity_id,
+                    ev.payload.get("rule_id", "rollup"),
+                    ev.observed_at,
+                    _reading_digest(ev.payload),
                 )
-                if ev.event_id not in existing:
-                    ev.company_id = ev.company_id or company_id
-                    store.append(ev)
-                    existing.add(ev.event_id)
-                    appended["green_flag"] += 1
+                if ev.event_id in existing:
+                    continue
+
+                # A rollup already at this (entity, rule, date) but with a DIFFERENT
+                # reading means the rules changed since it was derived. Appending the
+                # new one would double-count at a single world-time; skipping it
+                # silently — which is what happened before the digest was part of the
+                # id — meant a rule change never reached the store and nothing said so.
+                # So: refuse both, and COUNT it. A stale derivation is a rebuild
+                # instruction, not something to paper over.
+                if _supersedes_existing(ev, prior_readings):
+                    appended["stale_rollups"] = appended.get("stale_rollups", 0) + 1
+                    continue
+
+                ev.company_id = ev.company_id or company_id
+                store.append(ev)
+                existing.add(ev.event_id)
+                appended["green_flag"] += 1
 
     # 2. Claim validation -> contradictions the filter must exclude.
     #

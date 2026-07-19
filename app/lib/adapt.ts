@@ -301,8 +301,10 @@ function toIntegrity(raw: unknown): IntegrityFlag[] {
         // Live calls the quoted payload `extracted_text`. Dropping it meant the caught
         // injection — the thing worth seeing — was never rendered.
         quoted_span: str(f.quoted_span) ?? str(f.span) ?? str(f.extracted_text),
-        // Live calls this `handling`.
-        action_taken: str(f.action_taken) ?? str(f.handling) ?? "No action reported.",
+        // Live calls this `handling`. Empty when absent, for the same reason `detail`
+        // is: a block reading "Action taken / No action reported." is a placeholder
+        // announcing a missing field, not a finding.
+        action_taken: str(f.action_taken) ?? str(f.handling) ?? "",
         effect_on_decision: str(f.effect_on_decision) ?? undefined,
         effect_on_score: str(f.effect_on_score) ?? undefined,
         control_note: control ? str(control.conclusion) ?? undefined : undefined,

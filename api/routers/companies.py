@@ -470,6 +470,27 @@ def get_score_history(company_id: str, as_of: datetime | None = None, points: in
     return degrade(live, fallback)
 
 
+@router.get("/{company_id}/standout")
+def get_standout(company_id: str, as_of: datetime | None = None, refresh: bool = False) -> dict:
+    """What stood out about this company RELATIVE TO THE REST OF THE CORPUS.
+
+    This is the explicit call that populates the cache the ranked list reads. It is on
+    the detail path, like the memo and the screening, for the same reason: it costs one
+    LLM round-trip, and thirteen of those inline would be a 90-second list page.
+
+    `refresh=true` rebuilds the corpus frame and regenerates. Nothing else invalidates:
+    the cache key already carries this company's evidence digest AND the corpus digest,
+    so new evidence — here or on any company it is compared against — produces a miss
+    on its own.
+    """
+    from api import standout
+
+    return degrade(
+        lambda: standout.generate(company_id, resolve_as_of(as_of), refresh=refresh),
+        lambda: standout.not_generated(company_id),
+    )
+
+
 @router.get("/{company_id}/memo")
 def get_memo(company_id: str, as_of: datetime | None = None, dissent_viewed: bool = False) -> dict:
     """Recommendation stays null until the dissent has actually been served.

@@ -54,7 +54,7 @@
       },
       "gaming": "Commit count and version bumps are near-free; a script can produce thousands of commits in an afternoon.",
       "gaming_cost": "Expensive on substance and on calendar. burst_with_substance gates the volume on measured diff substance (shared thresholds with sourcing/burst.py, so the two definitions cannot drift), and 90 days of sustained activity cannot be compressed at any price. Faking months of coherent, tested, semantically connected change to a system that compiles approaches the cost of just building it.",
-      "flag_rules": ["repeat_shipper", "sustained_activity_90d", "active_multiple_weeks", "recent_momentum", "burst_with_substance", "iterates_same_artifact", "revisits_over_new", "releases_same_repo", "proof_iterated"],
+      "flag_rules": ["repeat_shipper", "sustained_activity_90d", "active_multiple_weeks", "recent_momentum", "burst_with_substance", "iterates_same_artifact", "revisits_over_new", "releases_same_repo", "proof_iterated", "maintenance_after_launch"],
       "registry_signals": ["sustained_commit_substance", "release_cadence", "maintenance_after_launch"]
     },
     {

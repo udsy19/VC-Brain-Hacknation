@@ -1,7 +1,11 @@
 "use client";
 
 /**
- * Route `/` — the opening surface, built as a true plate sequence.
+ * Route `/plates` — the poster sequence.
+ *
+ * It used to be `/`. The application's entry point is now the account page, because a
+ * VC profile needs an owner before anything can be personalised (§1) — but the sequence
+ * is unchanged and reachable without a session, like everything else that is objective.
  *
  * Six plates, every one different in ground, marker, density or presence (§5).
  * Plate 05 has no visual at all — that is a deliberate design act and it carries

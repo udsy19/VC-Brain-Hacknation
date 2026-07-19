@@ -18,13 +18,82 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { clearSession, useSession } from "@/lib/useSession";
+import { logout } from "@/lib/vc";
 
 const NAV = [
-  { href: "/", label: "Plates", hint: "the poster sequence" },
-  { href: "/pipeline", label: "Pipeline", hint: "ranked list + compound query" },
+  { href: "/", label: "Account", hint: "sign in — personalisation only" },
+  { href: "/plates", label: "Plates", hint: "the poster sequence" },
+  { href: "/pipeline", label: "Pipeline", hint: "core rank + compound query" },
+  { href: "/profile", label: "Profile", hint: "survey, decision history, the gap" },
+  { href: "/council", label: "Council", hint: "derived + authored council agents" },
+  { href: "/personal", label: "Your rank", hint: "personal rank beside core rank" },
   { href: "/backtest", label: "Backtest", hint: "calibration + the fame check" },
 ];
+
+/**
+ * Who you are, in the frame, on every page.
+ *
+ * Three states and they are genuinely three: UNKNOWN (the session check has not
+ * answered) renders nothing at all, because flashing "sign in" at a signed-in user is
+ * how a frame teaches people not to trust it. Anonymous says what anonymous COSTS —
+ * personalisation, not the product — so the invitation reads as an offer rather than a
+ * wall.
+ */
+function SessionStrip() {
+  const { me } = useSession();
+  const [busy, setBusy] = useState(false);
+
+  if (!me) return null;
+
+  if (!me.authenticated) {
+    return (
+      <div className="meta ml-auto flex items-center gap-3 text-[color:var(--muted)]">
+        <span>NOT SIGNED IN · CORE RANK ONLY</span>
+        <Link
+          href="/"
+          className="border border-[color:var(--accent)] px-3 py-1 text-[color:var(--accent)]"
+        >
+          SIGN IN
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="meta ml-auto flex items-center gap-3 text-[color:var(--muted)]">
+      <span className="normal-case tracking-normal">{me.user?.email}</span>
+      <span
+        className="border px-2 py-1"
+        style={{
+          color: me.personalisation_enabled ? "var(--accent)" : "var(--muted)",
+          borderColor: me.personalisation_enabled ? "var(--accent)" : "var(--muted)",
+          borderStyle: me.personalisation_enabled ? "solid" : "dashed",
+        }}
+        title={me.reason}
+      >
+        PERSONALISATION {me.personalisation_enabled ? "ON" : "OFF"}
+      </span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          // The cookie is dropped locally first, so the frame cannot keep showing an
+          // identity while a slow logout is in flight. The server call still runs — it
+          // is what actually deletes the session row.
+          await logout();
+          clearSession();
+          setBusy(false);
+        }}
+        className="border border-[color:var(--rule)] px-3 py-1 text-[color:var(--figure)] disabled:opacity-50"
+      >
+        {busy ? "SIGNING OUT…" : "SIGN OUT"}
+      </button>
+    </div>
+  );
+}
 
 export interface Crumb {
   label: string;
@@ -88,6 +157,7 @@ export default function Shell({
               </Link>
             );
           })}
+          <SessionStrip />
         </nav>
 
         {toolbar && (

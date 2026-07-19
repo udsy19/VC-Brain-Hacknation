@@ -582,3 +582,212 @@ export async function checkHealth(): Promise<boolean> {
     return false;
   }
 }
+
+// ===========================================================================
+// ===========================================================================
+// OUTBOUND — eligibility, drafting, the review queue.  [outreach workstream]
+//
+// Everything below this rule is ADDITIVE. Nothing above it was changed.
+//
+// THREE DELIBERATE DEPARTURES from the module above, each with its reason:
+//
+// 1. NO FIXTURE FALLBACK. The rest of this file serves a hand-authored record when
+//    the backend is down, because a blank pipeline mid-demo is worse than a stale
+//    one. That trade inverts here. A fixture draft is a fabricated claim about a
+//    real person, and a fixture eligibility verdict would show a green light that
+//    no gate ever returned. These functions therefore return a discriminated
+//    result and the UI renders the failure.
+//
+// 2. `credentials: "include"`. The eligibility gate screens the signed-in VC's
+//    stated red lines (api/routers/outbound.py::_red_lines). Without the cookie the
+//    gate runs with an empty red-line list, which SILENTLY RELAXES it — the one
+//    failure mode that router explicitly refuses. So the session must travel.
+//
+// 3. 422 is an OUTCOME, not an error. `POST /outbound/draft/{id}` answers 422 when
+//    the generated text could not be grounded in a stored span; the draft was
+//    recorded as `rejected_unverifiable` and discarded. That is the anti-
+//    hallucination path firing correctly and it is surfaced as its own state.
+//
+// The existing `post()` helper is not reused for exactly (2) and (3): it sends no
+// credentials and it flattens every non-2xx into one error shape.
+//
+// NOTE ON `recipient_email`: the wire carries it and it is always null (the
+// reviewer supplies an address outside this system). It is deliberately ABSENT
+// from `OutboundDraft` below, so no component can render or collect it. Routing
+// outreach via LinkedIn exists to keep a founder's personal address out of the
+// VC's hands; a convenience field here would undo that.
+// ===========================================================================
+// ===========================================================================
+
+/** One re-run of a decision the system already made on its own terms. */
+export interface EligibilityCheck {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface EligibilityVerdict {
+  /** Slug (`vb-tensorpage`) when the route could resolve one. */
+  id?: string;
+  company_id: string;
+  name: string;
+  eligible: boolean;
+  checks: EligibilityCheck[];
+  /** Names of the checks that said no. Empty on an eligible company. */
+  blocked_by: string[];
+  why_not: string | null;
+}
+
+export interface EligibleResponse {
+  as_of: string;
+  /** True when a session was present, so the profile's red lines were screened. */
+  profile_active: boolean;
+  eligible: EligibilityVerdict[];
+  /** The more useful half. A funnel that reports only survivors cannot be audited. */
+  ineligible: EligibilityVerdict[];
+  rule: string;
+}
+
+/** A resolved receipt. The URL is attached by the backend from a stored event —
+ *  the model that wrote the prose was never shown one. */
+export interface DraftCitation {
+  n: number;
+  ref_id: string;
+  event_id: string;
+  source: string;
+  source_url: string;
+  kind: string;
+  observed_at: string;
+  evidence_span: string;
+}
+
+export type DraftStatus = "queued" | "approved" | "rejected" | "rejected_unverifiable";
+
+export interface OutboundDraft {
+  draft_id: string;
+  company_id: string;
+  company_name: string | null;
+  recipient_name: string | null;
+  status: DraftStatus;
+  subject: string | null;
+  body: string | null;
+  citations: DraftCitation[] | null;
+  eligibility: EligibilityVerdict | null;
+  rejection_reason: string | null;
+  as_of: string;
+  created_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+}
+
+export interface QueueResponse {
+  status: DraftStatus;
+  count: number;
+  items: OutboundDraft[];
+  note: string;
+}
+
+/** Resolves, always. `unverifiable` marks the 422 anti-hallucination rejection. */
+export type OutRes<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; status?: number; unverifiable?: boolean };
+
+async function outbound<T>(
+  path: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<OutRes<T>> {
+  const { timeoutMs = TIMEOUT.read, ...rest } = init;
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...rest,
+      signal: ctrl.signal,
+      cache: "no-store",
+      credentials: "include",
+      headers: { accept: "application/json", ...(rest.headers ?? {}) },
+    });
+    const body: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      const detail = isObj(body) ? body.detail : undefined;
+      return {
+        ok: false,
+        status: res.status,
+        unverifiable: res.status === 422,
+        error:
+          typeof detail === "string" ? detail : `${res.status} ${res.statusText}`,
+      };
+    }
+    return { ok: true, data: body as T };
+  } catch (e) {
+    return {
+      ok: false,
+      error: timedOut ? `no response in ${timeoutMs / 1000}s` : reason(e),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const asOfQuery = (asOf?: string | null) =>
+  asOf ? `as_of=${encodeURIComponent(asOf)}` : "";
+
+/**
+ * Who genuinely passes, and for everyone else exactly which check said no.
+ *
+ * Re-runs the gate, the validator, the integrity flags, the red lines and the memo's
+ * own cheque calculation for every company, so it is slow by construction. The read
+ * budget is widened accordingly rather than aborting work that was going to answer.
+ */
+export function getEligible(opts: { asOf?: string | null; companyId?: string } = {}) {
+  const qs = [
+    asOfQuery(opts.asOf),
+    opts.companyId ? `company_id=${encodeURIComponent(opts.companyId)}` : "",
+  ]
+    .filter(Boolean)
+    .join("&");
+  return outbound<EligibleResponse>(`/outbound/eligible${qs ? `?${qs}` : ""}`, {
+    timeoutMs: TIMEOUT.llm,
+  });
+}
+
+/**
+ * Generate, verify, queue. A `{ unverifiable: true }` failure is the system refusing
+ * to hand a human text it could not ground — show it, do not retry it silently.
+ */
+export function postDraft(companyId: string, asOf?: string | null) {
+  const qs = asOfQuery(asOf);
+  return outbound<OutboundDraft>(
+    `/outbound/draft/${encodeURIComponent(companyId)}${qs ? `?${qs}` : ""}`,
+    { method: "POST", timeoutMs: TIMEOUT.llm },
+  );
+}
+
+export function getOutboundQueue(status: DraftStatus = "queued") {
+  return outbound<QueueResponse>(`/outbound/queue?status=${encodeURIComponent(status)}`);
+}
+
+/**
+ * Record a human's disposition. `by` is required by the router and unvalidated on
+ * purpose: an anonymous approval of a cold email about a named person is worse than
+ * no approval. APPROVE DOES NOT SEND — there is no send endpoint anywhere.
+ */
+export function decideDraft(
+  draftId: string,
+  decision: "approve" | "reject",
+  by: string,
+  note?: string,
+) {
+  return outbound<OutboundDraft>(
+    `/outbound/queue/${encodeURIComponent(draftId)}/${decision}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ by, note: note?.trim() || null }),
+    },
+  );
+}

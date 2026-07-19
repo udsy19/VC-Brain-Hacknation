@@ -2,11 +2,22 @@
   "$schema_version": "1.0.0",
   "description": "Reliable Source Registry for VC Brain. Specification only -- sourcing/ owns implementation. See docs/SOURCES.md for the argument behind every field.",
   "invariants": [
-    "No entry may be used as a pedigree proxy. Affiliation, employer, school and investor names are FACTS to display, never SCORE INPUTS (SHARED.md Invariant #3).",
+    "No entry may be used as a pedigree proxy. Affiliation, employer, school and investor names are FACTS to display, never SCORE INPUTS (SHARED.md Invariant #3). ONE NARROW EXCEPTION EXISTS: feature_flags.career_history_signals_enabled, default false. While it is false this invariant holds in full and behaviour is byte-identical to the pre-flag build. While it is true, self-reported career-history signals from the `linkedin` source reach scoring. Nothing else can turn them on.",
     "Every source must yield a real observed_at from the world, not now(). If it cannot, it is ingested with integrity_flags:['date_inferred'] at the earliest defensible date (B.md).",
     "All fetched content is UNTRUSTED. It reaches an LLM only inside <untrusted_content> via core/llm.py.",
     "trust_weight scales CONFIDENCE IN AN OBSERVATION, never the founder's score directly."
   ],
+
+  "feature_flags": {
+    "career_history_signals_enabled": {
+      "value": false,
+      "weakens_invariant": "SHARED.md Invariant #3 (no pedigree) -- partially, and knowingly.",
+      "what_it_does": "When true, the `linkedin` source is ingestible and the three career-history rules in intelligence/flags.py are appended to the rule set. When false, sourcing/linkedin.py refuses to ingest and those rules do not exist as far as scoring is concerned -- not merely unfired, but absent from the denominator, so no founder is scored against them.",
+      "why_it_exists": "The product owner decided to include LinkedIn as a scoring source after being shown the objections (see the `linkedin` entry's previously_rejected_because). A stated guarantee that quietly stopped holding would be worse than one never made, so the weakening is one named, reversible, defaulted-off switch rather than a diffuse change. Turning it off restores the guarantee exactly.",
+      "the_objection_on_record": "Every signal behind this flag is self-reported, unverified by any third party, retroactively editable, and correlated with the coverage gaps this registry already documents. The concern is that it ranks founders with unrecognised employers -- and founders with no profile at all -- below founders with polished ones, which is the Type 6 archetype the product exists to find. tests/test_no_pedigree.py::test_career_history_rules_require_the_flag is the tripwire; docs/SOURCES.md section 6 carries the measured before/after.",
+      "how_to_revert": "Set value to false. There is no second switch and no other code path."
+    }
+  },
 
   "tiers": {
     "1": {
@@ -403,14 +414,54 @@
       "id": "linkedin",
       "name": "LinkedIn",
       "enabled": false,
-      "tier": "rejected",
-      "event_source": null,
+      "requires_flag": "career_history_signals_enabled",
+      "tier": 3,
+      "event_source": "web",
+      "previously": "rejected",
+      "reinstated_because": "Product-owner decision, taken with the objections below on the record. This entry is NOT a retraction of the original rejection -- the substantive argument in `previously_rejected_because` still stands and is still believed to be correct. The source is reinstated as an OPT-IN, off by default, so that the claim can be measured rather than argued.",
+      "previously_rejected_because": "Two independent reasons, either sufficient. (1) LEGAL/ToS: automated access is expressly prohibited by robots.txt; the hiQ line of cases concerned CFAA liability for public data and did not make it contract-permissible. (2) SUBSTANTIVE, and this is the one that matters: a LinkedIn profile is a self-authored, unverified, employer-and-school-shaped document. Strip the employer brand, the school, and the title inflation -- all of which Invariant #3 forbids us from scoring -- and essentially nothing remains that is not better evidenced elsewhere. Tenure dates are the only residue, and those are self-reported. It is a pedigree proxy almost by construction, and its inclusion would systematically favor the credentialed candidate over the builder, which inverts the product's entire thesis.",
       "access": {
-        "scrape_permitted": "NO. robots.txt states: 'The use of robots or other automated means to access LinkedIn without the express permission of LinkedIn is strictly prohibited.' /profile/, /me/, /connections*, /messaging/ are all disallowed. Only LinkedInBot has Allow: /.",
+        "kind": "user_supplied | official_api | data_export",
+        "endpoint": null,
+        "auth": "LINKEDIN_ACCESS_TOKEN (optional; no fetcher is wired to it -- see below)",
+        "rate_limit": "n/a -- there is no automated fetcher.",
         "rate_limit_status": "n/a",
-        "tos_source": "https://www.linkedin.com/robots.txt"
+        "scrape_permitted": "NO, AND WE DO NOT. robots.txt states: 'The use of robots or other automated means to access LinkedIn without the express permission of LinkedIn is strictly prohibited.' /profile/, /me/, /connections*, /messaging/ are all disallowed; only LinkedInBot has Allow: /. sourcing/linkedin.py therefore ships NO scraper, NO headless browser, and NO HTTP fetcher of any kind. Reinstating the source did not reinstate a right to crawl it.",
+        "tos_source": "https://www.linkedin.com/robots.txt",
+        "permitted_paths": [
+          "USER_PASTED -- an analyst or the founder pastes a profile URL and types or confirms the fields. A human read the page under their own credentials; we stored what they told us.",
+          "OFFICIAL_API -- LinkedIn Marketing/Talent API where the org holds credentials and the member consented. The ingestion path is source-agnostic, so a token slots in without new parsing code.",
+          "FOUNDER_EXPORT -- the founder's own 'Get a copy of your data' archive, supplied by them."
+        ],
+        "tos_constraint": "Every one of the three paths is a human handing us data they are entitled to. If a future change adds an automated fetcher, this entry is invalid and the source returns to rejected."
       },
-      "rejected_because": "Two independent reasons, either sufficient. (1) LEGAL/ToS: automated access is expressly prohibited by robots.txt; the hiQ line of cases concerned CFAA liability for public data and did not make it contract-permissible. (2) SUBSTANTIVE, and this is the one that matters: a LinkedIn profile is a self-authored, unverified, employer-and-school-shaped document. Strip the employer brand, the school, and the title inflation -- all of which Invariant #3 forbids us from scoring -- and essentially nothing remains that is not better evidenced elsewhere. Tenure dates are the only residue, and those are self-reported. It is a pedigree proxy almost by construction, and its inclusion would systematically favor the credentialed candidate over the builder, which inverts the product's entire thesis."
+      "include_domains": [],
+      "include_domains_note": "DELIBERATELY EMPTY. core/search.py builds Tavily's include_domains from enabled sources' include_domains. Listing linkedin.com here would point an automated crawler at the exact domain whose robots.txt forbids automated access, laundering the prohibition through a third party. The omission is the control.",
+      "observed_at": {
+        "field": "self-reported role start/end month, as entered by the human who supplied the profile",
+        "quality": "weak",
+        "note": "There is no server-side timestamp anywhere in this source. The dates are typed by the founder and editable by them at any time, including after they learn they are being evaluated. Month granularity only. Events are ingested with integrity_flags:['date_inferred'] and 'self_reported' -- never a defensible clock, and the backtest should treat any signal resting on it as soft."
+      },
+      "freshness": "whenever a human last supplied it",
+      "uniquely_provides": "Honestly: very little that another source does not evidence better. Its one non-duplicated field is CONTINUOUS EMPLOYMENT DURATION at organisations that publish nothing -- the closed-source founder whose work is structurally invisible to every tier-1 source. That is a real gap (see coverage_gaps) and this is a weak, self-reported patch on it. Note that intelligence/proof.py already exists for exactly that case and answers it with a challenge rather than an inference, which is the stronger remedy.",
+      "signals": ["role_tenure_duration", "role_progression", "self_described_scope"],
+      "bias": {
+        "misses": [
+          "Founders with no LinkedIn presence at all -- disproportionately non-Western, privacy-conscious, open-source-native, and academic founders. This is the load-bearing miss: absence here is a cultural and regional artifact, not a fact about the founder.",
+          "Founders whose employers are unknown to the reader. The self-described-scope signal is judged from founder-authored prose; an unrecognised organisation gives a grader no anchor and reads as thin.",
+          "Career paths that are not a monotonic ladder: caregiving gaps, visa-forced job changes, mandatory national service, illness, founders who left a role to build the thing we are evaluating.",
+          "Non-Anglophone profiles, which are shorter, less inflated, and use non-Latin scripts -- the transliterated_name failure mode named in B.md.",
+          "Anyone who declines to maintain a self-promotional document, which is a personality trait and not a competence trait."
+        ],
+        "systematic_direction": "This source penalises the same cohort the registry already admits it under-serves, so its errors are CORRELATED with the existing coverage gaps rather than independent of them. A source that misses whom you already miss does not add coverage; it deepens the hole and adds confidence on top of it."
+      },
+      "failure_modes": [
+        "SELF-AUTHORED, UNVERIFIED, ZERO ADVERSARIAL REVIEW. Unlike a Show HN thread or a GitHub issue, nobody contradicts a LinkedIn profile. It is the only source in this registry with no third party in the loop, so it is the cheapest to game -- a fabricated title costs one edit.",
+        "TITLE INFLATION IS UNBOUNDED AND UNEVENLY DISTRIBUTED. Self-promotion norms vary sharply by culture and by gender, so title-derived signal measures willingness to self-promote as much as scope held.",
+        "PEDIGREE LEAKS THROUGH PROXIES EVEN AFTER REDACTION. Employer and school names are stripped before scoring, but tenure at a large firm, a dense title ladder, and fluent self-promotional English all correlate with the same underlying advantage. Passing the banned-term grep is NOT the same as being brand-neutral, and this entry should not be read as claiming otherwise.",
+        "RETROACTIVELY EDITABLE. A founder can rewrite their entire history after learning they are being assessed, which no other source in this registry permits.",
+        "ABSENCE IS LOUD AND MUST NOT BE. Every signal here is absence:UNKNOWN and every rule is gated on the profile being present, precisely so a founder with no profile is not scored against one who has a polished one. This is the mechanism the invariant existed to prevent; the gating is the only thing standing between this source and that outcome."
+      ]
     },
     {
       "id": "crunchbase",
@@ -495,6 +546,43 @@
 
   "signals": {
     "_scale": "magnitude is a rough weight in [0,1] on the contribution to a single axis, for the per-source attribution UI. absence: MEANINGFUL = its lack is itself evidence; UNKNOWN = its lack tells us nothing; CONDITIONAL = meaningful only if the predicate holds.",
+
+    "career_history": [
+      {
+        "_category_note": "OPT-IN. Every signal in this category is inert unless feature_flags.career_history_signals_enabled is true. All three are SELF-REPORTED with no third party in the loop, so per the registry's standing rule on self-reported evidence they are ingested at low confidence (0.4), which widens observation noise r_t in intelligence/flags.observation() rather than pretending to precision the source does not have. Magnitudes are deliberately the lowest in the registry -- lower than peer_selection (0.3), which was itself set low for the same privilege-detector reason.",
+        "id": "role_tenure_duration",
+        "sources": ["linkedin"],
+        "direction": "ADD",
+        "magnitude": 0.25,
+        "evidences": "Continuous months in a single role, brand-blind. The organisation's NAME is never read -- only the duration between a start and an end date. What it is offered as evidence of: the ability to stay with one hard problem past the point where it stopped being novel, which is the same trait maintenance_after_launch measures from artifacts, and measures far better.",
+        "gaming": "Free. Two date fields in a text box, editable retroactively, verified by nobody. This is the cheapest-to-fake signal in the entire registry and the magnitude reflects that, not the trait's importance.",
+        "absence": "UNKNOWN, hard-coded, and enforced by rule gating rather than by convention -- the rules are skipped entirely when no profile is present, so they never enter the denominator. Not having a profile must cost a founder nothing.",
+        "self_reported": true,
+        "critical_note": "Long tenure also correlates with visa sponsorship lock-in, caregiving-constrained job mobility, and geographies with weaker labour mobility. Reading it purely as commitment misreads a constraint as a virtue."
+      },
+      {
+        "id": "role_progression",
+        "sources": ["linkedin"],
+        "direction": "ADD",
+        "magnitude": 0.2,
+        "evidences": "Count of distinct role steps within one organisation over time -- brand-blind and title-string-blind. Offered as evidence that people who worked with them repeatedly chose to give them more responsibility, which is third-party judgement of a kind, but relayed to us solely by the subject.",
+        "gaming": "Free, and worse than free: inventing intermediate titles is unfalsifiable, and title ladders are denser at large firms than at small ones for reasons unrelated to the person.",
+        "absence": "UNKNOWN, hard-coded. A founder who joined a five-person company and stayed a generalist has no ladder to show and this must never count against them.",
+        "self_reported": true,
+        "critical_note": "The strongest confound in the category. Promotion cadence is a property of the ORGANISATION'S HR structure at least as much as the person, so this is the signal that most nearly reconstructs employer prestige after the brand name has been stripped -- which is the specific reason Invariant #3 existed."
+      },
+      {
+        "id": "self_described_scope",
+        "sources": ["linkedin"],
+        "direction": "ADD",
+        "magnitude": 0.15,
+        "evidences": "Founder-authored prose describing what they were responsible for. Counted ONLY when the description contains a falsifiable, checkable particular -- a named system, a number with units, an artifact that exists elsewhere -- and cross-referenced against a tier-1 artifact. Unbacked prose scores zero, in keeping with the intellectual_honesty rule that an admission must be falsifiable against another artifact or not count.",
+        "gaming": "Free to write, and this is the surface where inflation concentrates. The falsifiability requirement is the only thing keeping it above noise, and where the corroborating artifact exists the artifact is the better evidence anyway -- making this signal near-redundant by construction.",
+        "absence": "UNKNOWN, hard-coded.",
+        "self_reported": true,
+        "critical_note": "This is UNTRUSTED founder-authored text and reaches an LLM only inside <untrusted_content> via the normal bus path. It is also the signal most sensitive to Anglophone self-promotion norms: the same scope described modestly in a second language scores lower than an inflated English description of less work."
+      }
+    ],
 
     "technical": [
       {

@@ -20,7 +20,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from schema.events import Event, EventKind, Source
@@ -66,6 +66,19 @@ class Rule:
     weight: float
     requires: frozenset[Source] | None  # None = always applicable
     check: RuleCheck
+    # Narrower than `requires`. Some sources share a Source enum value (WEB is the
+    # registry's catch-all, carrying source_id in the payload per docs/SOURCES.md
+    # section 7.3), so a rule that applies to ONE of them cannot express that with
+    # the enum alone. None = no payload-level restriction, which is every rule
+    # below except the opt-in career-history ones.
+    requires_source_id: str | None = None
+    # Third applicability gate, and the only one that depends on WHEN we are
+    # asking rather than on what sources exist. A rule that cannot yet be judged
+    # -- because the calendar window it measures has not elapsed -- must not be
+    # evaluated, so it stays out of the y_t denominator entirely. Returning False
+    # here is "not applicable"; it is NOT the same as the check returning
+    # (False, []), which is a real negative finding.
+    applicable_when: Callable[[Sequence[Event], datetime], bool] | None = None
 
     @property
     def id(self) -> str:
@@ -328,6 +341,84 @@ def _burst_with_substance(events: Sequence[Event]) -> tuple[bool, list[Event]]:
     return bool(hits), hits[:3]
 
 
+
+# ---------------------------------------------------------------------------
+# maintenance_after_launch -- specified in docs/SOURCES.md section 2 at magnitude
+# 0.7 and called the best cost-to-signal ratio in the registry. It measures
+# whether patch releases kept landing after the launch spike: did they keep the
+# thing alive once the attention died.
+#
+# Why it earns a high weight: it cannot be compressed in calendar time. A commit
+# burst is a weekend, a README is an afternoon, stars are purchasable. Nobody can
+# retroactively have maintained something for a year, so the cost of faking it
+# equals the cost of doing it. That property is the whole point.
+#
+# The thing that must not go wrong: "too recent to tell" is NOT "abandoned". A
+# project launched two months ago CANNOT have a six-month maintenance record, and
+# scoring that as a failure would be a young-project penalty wearing a quality
+# signal's clothes -- in a pre-seed corpus that is most of the population, and it
+# would land hardest on the founders who just shipped their first thing.
+# ---------------------------------------------------------------------------
+
+# The checkpoints SOURCES.md names: patch releases at roughly 3, 6 and 12 months.
+MAINTENANCE_MILESTONE_DAYS = (90, 180, 365)
+
+# How much calendar time must have elapsed since launch before ABSENCE of
+# maintenance is allowed to mean anything. Set at the 6-month checkpoint, not the
+# 3-month one: at 90 days a single quiet quarter is indistinguishable from an
+# ordinary release rhythm, so judging there would convert normal cadence into a
+# negative. Before this has elapsed the rule is NOT APPLICABLE and is not
+# evaluated at all. This is the operational form of the SOURCES.md line that the
+# absence of this signal is meaningful -- meaningful only once it has had the
+# chance to appear.
+MAINTENANCE_MATURITY_DAYS = 180
+
+
+def _launch_event(events: Sequence[Event]) -> Event | None:
+    """The launch is the first RELEASE. No release means nothing has launched yet."""
+    releases = sorted(_of_kind(events, EventKind.RELEASE), key=lambda e: e.observed_at)
+    return releases[0] if releases else None
+
+
+def _maintenance_is_judgeable(events: Sequence[Event], as_of: datetime) -> bool:
+    """Applicability: has enough time passed since launch to judge maintenance?
+
+    False for a founder who has not launched (nothing to maintain) and for one
+    whose launch is younger than the maturity window (too recent to tell). Both
+    are UNKNOWN, and neither may cost the founder anything.
+    """
+    launch = _launch_event(events)
+    if launch is None:
+        return False
+    return (as_of - launch.observed_at) >= timedelta(days=MAINTENANCE_MATURITY_DAYS)
+
+
+def _maintenance_after_launch(events: Sequence[Event]) -> tuple[bool, list[Event]]:
+    """Fired when the artifact was still being worked on past the launch spike.
+
+    Reached only when `_maintenance_is_judgeable` already said yes, so returning
+    False here is a genuine finding -- the abandoned-demo case -- rather than a
+    statement about our ignorance.
+
+    Releases are the primary channel; repo activity is secondary, because a
+    project kept alive with commits but no new tag is being maintained even
+    though it is not being re-released.
+    """
+    launch = _launch_event(events)
+    if launch is None:
+        return False, []
+    first_checkpoint = launch.observed_at + timedelta(days=MAINTENANCE_MILESTONE_DAYS[0])
+    later = sorted(
+        (
+            e
+            for e in _of_kind(events, EventKind.RELEASE, EventKind.REPO_ACTIVITY)
+            if e.observed_at >= first_checkpoint
+        ),
+        key=lambda e: e.observed_at,
+    )
+    return bool(later), later[:3]
+
+
 def _founder_replies(events: Sequence[Event]) -> tuple[bool, list[Event]]:
     hits = [e for e in _of_kind(events, EventKind.HN_COMMENT) if _flag(e.payload.get("is_author"))]
     return len(hits) >= 2, hits[:3]
@@ -431,6 +522,14 @@ RULES: list[Rule] = [
         3.0,
         _GH,
         _releases_same_repo,
+    ),
+    Rule(
+        "maintenance_after_launch",
+        "Kept maintaining the artifact after the launch spike?",
+        3.0,
+        _GH,
+        _maintenance_after_launch,
+        applicable_when=_maintenance_is_judgeable,
     ),
     # -- learning from failure ----------------------------------------------
     Rule(
@@ -592,6 +691,95 @@ RULES: list[Rule] = [
 
 
 # ---------------------------------------------------------------------------
+# Opt-in career-history rules. OFF BY DEFAULT.
+#
+# These are the only rules in this file that read self-reported career history
+# rather than an artifact, and they are the narrow exception to SHARED.md
+# Invariant #3. They are appended to the rule set ONLY when
+# sourcing.linkedin.career_history_signals_enabled() is true. With the flag off
+# they are not skipped-but-present, they are ABSENT: they never enter the
+# denominator of y_t, so behaviour is byte-identical to the pre-flag build.
+#
+# Two gates, both necessary:
+#   1. the flag, checked in _active_rules()
+#   2. requires_source_id, so a founder with no supplied profile has these rules
+#      skipped entirely rather than evaluated-and-unfired. Evaluated-and-unfired
+#      would mean absence of a profile lowers y_t, which is the "missing = zero"
+#      failure the registry forbids and the precise mechanism that would sink the
+#      founders this product exists to find.
+#
+# Weights are 1.0, the floor of the scale used above, because every one of these
+# is self-authored, contradicted by nobody, and editable after the founder learns
+# they are being assessed. See data/sources.json signals.career_history.
+# ---------------------------------------------------------------------------
+
+_MIN_TENURE_MONTHS = 24
+_CAREER_SOURCE_ID = "linkedin"
+
+
+def _career_events(events: Sequence[Event]) -> list[Event]:
+    return [
+        e
+        for e in _of_kind(events, EventKind.PROFILE_FACT)
+        if e.payload.get("source_id") == _CAREER_SOURCE_ID
+    ]
+
+
+def _career_rule(key: str, minimum: float) -> RuleCheck:
+    def check(events: Sequence[Event]) -> tuple[bool, list[Event]]:
+        hits = [
+            e
+            for e in _career_events(events)
+            if isinstance(e.payload.get(key), (int, float)) and e.payload[key] >= minimum
+        ]
+        return bool(hits), hits[:3]
+
+    return check
+
+
+CAREER_HISTORY_RULES: list[Rule] = [
+    Rule(
+        "role_tenure_duration",
+        "Stayed with one role for two years or more (self-reported)?",
+        1.0,
+        None,
+        _career_rule("tenure_months_longest", _MIN_TENURE_MONTHS),
+        requires_source_id=_CAREER_SOURCE_ID,
+    ),
+    Rule(
+        "role_progression",
+        "Took on more responsibility within one organisation (self-reported)?",
+        1.0,
+        None,
+        _career_rule("role_steps", 1),
+        requires_source_id=_CAREER_SOURCE_ID,
+    ),
+    Rule(
+        "self_described_scope",
+        "Describes scope with a checkable particular, not just adjectives?",
+        1.0,
+        None,
+        _career_rule("scope_claims_with_specifics", 1),
+        requires_source_id=_CAREER_SOURCE_ID,
+    ),
+]
+
+
+def _active_rules() -> list[Rule]:
+    """RULES, plus the career-history rules only while the flag is on.
+
+    The flag is read per call rather than cached at import, so a test or a
+    measurement run can toggle it without reloading the module — and so that
+    turning it off genuinely restores the previous behaviour in a live process.
+    """
+    from sourcing.linkedin import career_history_signals_enabled
+
+    if career_history_signals_enabled():
+        return [*RULES, *CAREER_HISTORY_RULES]
+    return RULES
+
+
+# ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 
@@ -645,11 +833,23 @@ def evaluate_events(events: list[Event], entity_id: UUID, as_of: datetime) -> li
     if not events:
         return []
     present_sources = {e.source for e in events}
+    present_source_ids = {
+        e.payload.get("source_id") for e in events if isinstance(e.payload.get("source_id"), str)
+    }
     anchor = max(e.observed_at for e in events)  # never now(): Invariant #1
 
     flags: list[Event] = []
-    for rule in RULES:
+    for rule in _active_rules():
         if rule.requires is not None and not (rule.requires & present_sources):
+            continue
+        # Same principle as `requires`, one level finer: a rule whose source the
+        # founder does not have is NOT evaluated, so its absence cannot lower y_t.
+        if rule.requires_source_id is not None and rule.requires_source_id not in present_source_ids:
+            continue
+        # Time-dependent applicability: a window that has not elapsed cannot be
+        # judged, so the rule is skipped rather than failed. "Too recent to tell"
+        # must never read as "abandoned".
+        if rule.applicable_when is not None and not rule.applicable_when(events, as_of):
             continue
         fired, evidence = rule.check(events)
         # Fired flags are stamped when their evidence happened; unfired flags carry
@@ -719,7 +919,7 @@ def evaluate(
             "weight": rule.weight,
             "applicable": rule.rule_id in by_rule,
         }
-        for rule in RULES
+        for rule in _active_rules()
     ]
     fired = [row["id"] for row in flag_rows if row["applicable"] and row["fired"]]
     anchor = max(event.observed_at for event in scoped)
