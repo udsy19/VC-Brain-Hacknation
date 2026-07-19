@@ -20,7 +20,11 @@ app.add_middleware(
     CORSMiddleware,
     # A range, not just :3000 — Next.js hops to the next free port when 3000 is
     # taken, and a CORS failure at that moment looks exactly like a dead backend.
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):(300\d|3010)",
+    # Local dev ports, plus any *.vercel.app origin. In production the frontend and
+    # the API are served from ONE deployment, so calls are same-origin and never
+    # reach this check — the vercel pattern is here for preview deployments and for
+    # the case where the API is split onto its own host.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):(300\d|3010)|https://[a-z0-9-]+\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )

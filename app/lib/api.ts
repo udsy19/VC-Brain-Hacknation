@@ -30,8 +30,22 @@ import type {
   Thesis,
 } from "./types";
 
+/**
+ * Where the API lives.
+ *
+ * In production the backend is deployed alongside this app on the same Vercel
+ * project, so the default is the SAME-ORIGIN path `/api`. That matters for two
+ * reasons beyond tidiness: a same-origin call has no CORS to configure, and a
+ * relative path cannot end up pointing at the visitor's own machine — which is
+ * exactly what `http://localhost:8000` does once the site is deployed, and why
+ * every call failed there.
+ *
+ * Locally the backend runs on its own port, so dev falls back to :8000.
+ * NEXT_PUBLIC_API_BASE overrides both if the backend is ever hosted elsewhere.
+ */
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE ??
+  (process.env.NODE_ENV === "production" ? "/api" : "http://localhost:8000");
 
 /**
  * Timeouts are per-call because the calls are not alike. A list read that has not
