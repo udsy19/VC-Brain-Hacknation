@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routers import companies, insights
@@ -68,8 +68,78 @@ def health() -> dict:
 
 @app.get("/thesis")
 def get_thesis() -> dict:
-    """Config, not code: sectors, stage, geo, check size, risk appetite."""
-    return seed("thesis")
+    """Config, not code: sectors, stage, geo, check size, risk appetite.
+
+    `applies_to` is included so the panel can state what editing this actually
+    changes. The file was previously served, rendered, editable — and read by
+    nothing, which made it a picture of a control panel.
+    """
+    from core import thesis as thesis_mod
+
+    t = seed("thesis")
+    return {
+        **t,
+        "applies_to": {
+            "pipeline_membership": "sectors, stage and geo exclude companies from /companies",
+            "evidence_bar": thesis_mod.evidence_bar(t),
+            "check_size": thesis_mod.check_size(t),
+            "ranking_policy": thesis_mod.ranking_policy_id(t),
+            "never_affects": "founder score, green-flag rules, or anything a founder "
+            "is measured by — the thesis says what we look for, not what is true of them",
+        },
+    }
+
+
+@app.put("/thesis")
+def put_thesis(update: dict = Body(...)) -> dict:
+    """Persist an edited thesis. The dashboard POSTed to a route that did not exist,
+    so every edit was silently discarded the moment the page reloaded."""
+    import json as _json
+
+    from api.routers.deps import seed_dir
+    current = seed("thesis")
+    merged = {**current, **{k: v for k, v in (update or {}).items() if k != "applies_to"}}
+    (seed_dir() / "thesis.json").write_text(_json.dumps(merged, indent=2) + "\n")
+    return get_thesis()
+
+
+@app.get("/timing/{company_id}")
+def get_timing(company_id: str, as_of: datetime | None = None) -> dict:
+    """Signal-to-decision time — the rubric's "signal-to-decision time instrumented".
+
+    Runs the decision stages for real and times them, rather than reporting a stored
+    number. Two clocks that must travel together: `compute_ms` is what we can shorten,
+    `signal_age_days` is how long the evidence existed before we ruled on it. A fast
+    compute over stale evidence is not a fast decision.
+    """
+    from api.routers.deps import company_uuid, founder_entity_ids
+    from core.timing import Stages, measure
+    from memory import store
+
+    cutoff = resolve_as_of(as_of)
+    cid = company_uuid(company_id)
+    if cid is None:
+        raise HTTPException(404, f"unknown company: {company_id}")
+
+    stages = Stages()
+    with stages.stage("read_events"):
+        events = store.events(as_of=cutoff, company_id=cid)
+
+    with stages.stage("score_founder"):
+        from memory import score as score_mod
+
+        for ent in founder_entity_ids(cid)[:1]:
+            score_mod.founder(ent, cutoff)
+
+    with stages.stage("gate"):
+        try:
+            from intelligence import gate as gate_mod
+
+            gate_mod.evaluate(cid, cutoff)
+        except Exception:  # noqa: BLE001 - a stage that fails still took time
+            pass
+
+    return measure(cid, cutoff, stages, events)
 
 
 @app.get("/companies")
@@ -88,6 +158,7 @@ def list_companies(as_of: datetime | None = None) -> list[dict]:
         # of the archetype — but it does not belong in a list of things to invest in.
         excluded = _prior_company_names() | _backtest_cohort_names()
         rows = [r for r in rows if r.get("name") not in excluded]
+        rows = [r for r in rows if _in_thesis_scope(r)]
         ranked = sorted((_ranked_row(r, cutoff) for r in rows), key=_rank_key)
         for i, row in enumerate(ranked, 1):
             row["rank"] = i
@@ -323,6 +394,20 @@ def _prior_company_names() -> set[str]:
     from api.routers.deps import prior_company_names
 
     return prior_company_names()
+
+
+def _in_thesis_scope(row: dict) -> bool:
+    """S0 governs MEMBERSHIP, not score. A fund that does not invest in a sector does
+    not rank it lower — it does not look at it. Unknown values stay in scope, because
+    absent metadata must not quietly drop a founder (the Type 6 failure mode)."""
+    from api.routers.deps import fixture_key
+    from core import thesis as thesis_mod
+
+    seeded = _fixture_row(fixture_key(str(row.get("company_id") or ""))) or {}
+    ok, _ = thesis_mod.in_scope(
+        sector=seeded.get("sector"), stage=seeded.get("stage"), geo=seeded.get("geo")
+    )
+    return ok
 
 
 def _backtest_cohort_names() -> frozenset[str]:

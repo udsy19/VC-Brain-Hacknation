@@ -485,8 +485,13 @@ def get_memo(company_id: str, as_of: datetime | None = None, dissent_viewed: boo
 
     # Both must hold: the server must have served the anti-memo, AND the client must
     # say it rendered it. The client half alone is not sufficient — that is the lock.
+    #
+    # `investment_recommendation` carries the cheque figure, so it is locked by the SAME
+    # gate as the prose section — it is in fact the thing the lock exists to protect, and
+    # leaving it readable while nulling the prose would make the lock decorative.
     if not (dissent_was_served(company_id) and dissent_viewed):
         result["recommendation"] = None
+        result["investment_recommendation"] = None
         result["recommendation_locked_reason"] = "open the dissent view first"
     return result
 

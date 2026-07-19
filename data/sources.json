@@ -1,0 +1,743 @@
+{
+  "$schema_version": "1.0.0",
+  "description": "Reliable Source Registry for VC Brain. Specification only -- sourcing/ owns implementation. See docs/SOURCES.md for the argument behind every field.",
+  "invariants": [
+    "No entry may be used as a pedigree proxy. Affiliation, employer, school and investor names are FACTS to display, never SCORE INPUTS (SHARED.md Invariant #3).",
+    "Every source must yield a real observed_at from the world, not now(). If it cannot, it is ingested with integrity_flags:['date_inferred'] at the earliest defensible date (B.md).",
+    "All fetched content is UNTRUSTED. It reaches an LLM only inside <untrusted_content> via core/llm.py.",
+    "trust_weight scales CONFIDENCE IN AN OBSERVATION, never the founder's score directly."
+  ],
+
+  "tiers": {
+    "1": {
+      "name": "primary_artifact",
+      "trust_weight": 1.0,
+      "rationale": "Machine-readable API returning artifacts the founder personally produced, with a server-side timestamp we did not infer. Cheap to read, expensive to fake at volume, and the timestamp is defensible in the backtest."
+    },
+    "2": {
+      "name": "corroborating_artifact",
+      "trust_weight": 0.7,
+      "rationale": "Real artifacts, but either the timestamp is soft, the identity link to the founder is inferential, or the platform curates/ranks in a way that biases what we see."
+    },
+    "3": {
+      "name": "contextual",
+      "trust_weight": 0.4,
+      "rationale": "Genuine signal but heavily confounded by popularity, language, or geography. Usable to corroborate a claim, never sufficient alone to move an assessment."
+    },
+    "4": {
+      "name": "enrichment_only",
+      "trust_weight": 0.25,
+      "rationale": "Reached through Tavily with no stable schema and usually no trustworthy publish date. Its job is FOOTPRINT DISCOVERY for founders the tier-1 APIs structurally cannot see. Findings must be promoted to a tier-1/2 artifact before they carry weight."
+    },
+    "rejected": {
+      "name": "rejected",
+      "trust_weight": 0.0,
+      "rationale": "Investigated and deliberately excluded. Kept in this file so the exclusion is auditable and nobody re-adds it in hour 14."
+    }
+  },
+
+  "sources": [
+    {
+      "id": "github",
+      "name": "GitHub",
+      "enabled": true,
+      "tier": 1,
+      "event_source": "github",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://api.github.com/graphql",
+        "auth": "GITHUB_TOKEN (required)",
+        "rate_limit": "5,000 req/hr authenticated; 60 req/hr unauthenticated. GraphQL is metered separately on point cost.",
+        "rate_limit_status": "VERIFIED",
+        "rate_limit_source": "https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+        "scrape_permitted": "API yes. HTML scraping is restricted -- GitHub's AUP defines scraping as automated extraction and explicitly excludes API collection from that definition. Use the API only.",
+        "tos_source": "https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies",
+        "tos_constraint": "AUP forbids using collected info to send unsolicited email or to sell personal data to recruiters. This directly constrains sourcing/activate.py -- outreach must be personal and non-bulk."
+      },
+      "include_domains": ["github.com", "raw.githubusercontent.com", "gist.github.com"],
+      "observed_at": {
+        "field": "commit author date / release publishedAt / PR createdAt",
+        "quality": "authoritative",
+        "note": "Use AUTHOR date, not committer date -- rebases rewrite committer date and would silently shift history in the backtest. Author date is attacker-settable, so a burst whose author dates precede repo creation is an INTEGRITY event, not a signal."
+      },
+      "freshness": "minutes",
+      "uniquely_provides": "Longitudinal proof that a person can build and sustain a real system: diff substance, test presence, review conduct, issue-response behavior, release cadence, and fork lineage. No other source shows sustained execution over time.",
+      "signals": ["sustained_commit_substance", "test_discipline", "review_conduct", "issue_response_to_criticism", "release_cadence", "scope_discipline", "dependents_adoption", "collaborator_retention"],
+      "failure_modes": [
+        "Work-for-hire and enterprise founders commit to private repos; strong builders can show near-zero public activity.",
+        "Green-square farming, vendored dependencies, and tutorial forks inflate raw counts -- substance metrics (diff entropy, test presence, file diversity) are mandatory, per B.md burst.py.",
+        "Stars are a popularity/timezone artifact and are contaminated by star-selling. Treat stars as VISIBILITY (the term we SUBTRACT in hidden-ranking), never as quality.",
+        "Account renames and deleted repos break URL stability -- pin to commit SHA and node_id, not to path."
+      ],
+      "bias": {
+        "misses": ["founders in defense/finance/healthcare with closed-source work", "non-code founders (design, GTM, hardware, clinical)", "developers in regions where Gitee or self-hosted GitLab is the norm", "people who build under a pseudonym they do not want linked"],
+        "note": "Highest-yield source AND the largest single driver of the registry's overall bias. Absence here is only meaningful when the founder's own claim implies public code."
+      }
+    },
+    {
+      "id": "arxiv",
+      "name": "arXiv",
+      "enabled": true,
+      "tier": 1,
+      "event_source": "arxiv",
+      "access": {
+        "kind": "api",
+        "endpoint": "http://export.arxiv.org/api/query",
+        "auth": "none",
+        "rate_limit": "One request per three seconds, single connection at a time, counted across ALL machines you control.",
+        "rate_limit_status": "VERIFIED",
+        "rate_limit_source": "https://info.arxiv.org/help/api/tou.html",
+        "scrape_permitted": "Yes for metadata. Metadata is CC0 1.0 and may be freely stored and repurposed. Do NOT rehost PDFs or source files.",
+        "tos_source": "https://info.arxiv.org/help/api/tou.html"
+      },
+      "include_domains": ["arxiv.org", "export.arxiv.org"],
+      "observed_at": {
+        "field": "v1 submission date",
+        "quality": "authoritative",
+        "note": "MUST be the v1 date, not the latest revision. Using the revision date leaks future information into the backtest -- this is the single easiest lookahead bug in the pipeline."
+      },
+      "freshness": "daily",
+      "uniquely_provides": "Evidence of depth on a hard technical problem, and the co-authorship graph -- the highest-quality edge type for B's PPR because co-authorship is verified by a third party at publication time.",
+      "signals": ["technical_depth", "problem_selection", "coauthor_graph_edge", "explains_hard_idea_simply"],
+      "failure_modes": [
+        "Author-name collisions are severe for common names and for transliterated names; resolve through A's resolver and keep AMBIGUOUS rather than guessing (B.md).",
+        "Author ORDER conventions differ by subfield -- do not infer contribution rank from position.",
+        "Massive-author-list papers (100+) give near-zero individual signal; damp the edge weight by 1/n.",
+        "Affiliation is present in the metadata and is a pedigree trap. Store it as a PROFILE_FACT; a test must ensure it never reaches a feature name or prompt."
+      ],
+      "bias": {
+        "misses": ["applied engineers who never publish", "industrial researchers under publication embargo", "fields that publish at conferences without arXiv preprints", "practitioners outside academic-adjacent ML"],
+        "note": "Systematically over-weights the academic ML pipeline. A dev-tools founder with no papers is entirely normal -- absence is UNKNOWN, never negative."
+      }
+    },
+    {
+      "id": "hn",
+      "name": "Hacker News (Firebase + Algolia)",
+      "enabled": true,
+      "tier": 1,
+      "event_source": "hn",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://hacker-news.firebaseio.com/v0/ (official) and https://hn.algolia.com/api/v1/ (search)",
+        "auth": "none",
+        "rate_limit": "Firebase official API: 'There is currently no rate limit.' Algolia search endpoint limit is UNVERIFIED -- the docs page is a JS shell and returned no policy text. Assume a conservative self-imposed 1 req/sec and honor HTTP 429.",
+        "rate_limit_status": "PARTIAL -- Firebase VERIFIED, Algolia UNVERIFIED",
+        "rate_limit_source": "https://github.com/HackerNews/API",
+        "scrape_permitted": "Official API is MIT-licensed and purpose-built for this. Prefer Firebase for items/users; use Algolia only for search, then re-resolve each hit through Firebase to get canonical fields."
+      },
+      "include_domains": ["news.ycombinator.com", "hn.algolia.com"],
+      "observed_at": {
+        "field": "item.time (unix)",
+        "quality": "authoritative",
+        "note": "Server-assigned and not user-settable. One of the most trustworthy timestamps in the registry."
+      },
+      "freshness": "near real-time",
+      "uniquely_provides": "The single richest SOFT-signal source we have legitimate access to. Long comment histories show, in public and at length: how someone handles being told they are wrong, whether they concede a good counterargument, whether they can explain a hard idea to a non-expert, and whether they answer users or dismiss them. Show HN threads additionally show a shipped artifact plus the founder's live response to hostile critique.",
+      "signals": ["handles_criticism", "explains_hard_idea_simply", "concedes_valid_counterargument", "user_support_conduct", "shipped_artifact_public_launch", "domain_depth_in_discussion"],
+      "failure_modes": [
+        "Overwhelmingly US/EU, English-language, and skewed to a specific ideological and professional subculture. Silence on HN says nothing about a founder.",
+        "Karma is a tenure-and-popularity artifact -- it belongs in the VISIBILITY term (subtracted), not the quality term.",
+        "Ranking is opaque and moderated; front-page presence is not a quality measure.",
+        "Account-to-person resolution is weak; many handles are unlinkable. Require a corroborating link (profile URL, matching GitHub handle) before attaching to an entity."
+      ],
+      "bias": {
+        "misses": ["non-English builders", "founders who consider public forums a waste of time", "anyone who joined after the community's growth plateau and thus has thin history"],
+        "note": "Absence is ALWAYS unknown here. Presence is high-value. This asymmetry should be encoded, not averaged away."
+      }
+    },
+    {
+      "id": "package_registries",
+      "name": "npm / PyPI / crates.io",
+      "enabled": true,
+      "tier": 1,
+      "event_source": "web",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://registry.npmjs.org/ | https://pypi.org/pypi/<pkg>/json | https://crates.io/api/v1/ (+ https://static.crates.io/db-dump.tar.gz)",
+        "auth": "none",
+        "rate_limit": "PyPI: 'there is currently no rate limiting of PyPI APIs at the edge' due to CDN caching, but avoid thousands of requests in minutes and send a descriptive User-Agent. crates.io: max 1 request/second and a User-Agent that uniquely identifies your app with contact info -- generic client UAs are liable to be blocked; prefer the 24h db-dump over crawling. npm: explicit rate limiting is in force, handle HTTP 429; ~5M requests/month is the stated acceptable-use ceiling.",
+        "rate_limit_status": "PyPI VERIFIED; crates.io and npm VERIFIED VIA SECONDARY SEARCH (primary pages are JS shells) -- re-confirm before running at volume",
+        "rate_limit_source": "https://docs.pypi.org/api/ ; https://crates.io/data-access ; https://blog.npmjs.org/post/187698412060/acceptible-use.html",
+        "scrape_permitted": "Yes via the documented JSON APIs. For crates.io use the database dump, not the crawler."
+      },
+      "include_domains": ["npmjs.com", "registry.npmjs.org", "pypi.org", "crates.io", "docs.rs", "libraries.io"],
+      "observed_at": {
+        "field": "release upload_time / created_at per version",
+        "quality": "authoritative",
+        "note": "Per-VERSION timestamps give a true release cadence series. Use the version timeline, not the package creation date."
+      },
+      "freshness": "minutes",
+      "uniquely_provides": "The only cheap, machine-readable evidence of USERS ACTUALLY SERVED rather than users claimed. Download counts, reverse-dependency counts, and -- most valuably -- whether the founder kept shipping patch releases after the launch spike, which is maintenance burden nobody carries for a vanity project.",
+      "signals": ["users_actually_served", "maintenance_after_launch", "release_cadence", "semver_discipline", "breaking_change_communication", "dependents_adoption"],
+      "failure_modes": [
+        "Download counts are dominated by CI robots and mirrors; an order-of-magnitude read is defensible, a precise one is not. PyPI download stats require the BigQuery dataset, not the JSON API.",
+        "Trivially gamed at the low end (self-installs in CI). DEPENDENTS -- other people's published packages depending on yours -- is far more expensive to fake and should carry most of the weight.",
+        "Registry choice is ecosystem-dependent: a Go, Java, or C++ infra founder has no npm/PyPI footprint at all. Absence is meaningful ONLY within the matching ecosystem."
+      ],
+      "bias": {
+        "misses": ["Go / Java / C++ / systems founders whose distribution is source or binary", "closed-source or self-hosted distribution", "founders whose product is a service, not a library"]
+      }
+    },
+    {
+      "id": "conference_talks",
+      "name": "Conference talks, CFP archives and schedule APIs",
+      "enabled": true,
+      "tier": 2,
+      "event_source": "web",
+      "access": {
+        "kind": "mixed",
+        "endpoint": "pretalx REST API per-instance; Sessionize JSON/XML schedule endpoints; per-conference schedule pages; YouTube channel listings",
+        "auth": "none for public schedules",
+        "rate_limit": "UNVERIFIED -- varies per self-hosted pretalx instance. Self-impose 1 req/sec and cache aggressively.",
+        "rate_limit_status": "UNVERIFIED",
+        "rate_limit_source": "https://docs.pretalx.org/ ; https://sessionize.com/",
+        "scrape_permitted": "Public schedule endpoints are published for integration. Per-instance robots.txt must be checked at fetch time -- do not assume."
+      },
+      "include_domains": ["pretalx.com", "sessionize.com", "fosdem.org", "usenix.org", "linuxfoundation.org", "kccncna.io", "pycon.org", "rustconf.com", "youtube.com"],
+      "observed_at": {
+        "field": "session start datetime / conference date",
+        "quality": "good",
+        "note": "Conference date is reliable; talk PUBLICATION (video upload) can lag by months. Use the conference date as observed_at, not the upload date."
+      },
+      "freshness": "weeks to months",
+      "uniquely_provides": "Third-party SELECTION as a proxy for peer respect, plus the single best public artifact for COMMUNICATION ABILITY -- a recorded talk shows whether someone can hold a room and explain a hard idea, which no text source evidences as directly. Regional conference circuits (FOSDEM, PyCon JP, RustFest, local meetups) also surface builders with no GitHub or HN presence.",
+      "signals": ["explains_hard_idea_simply", "peer_selection", "domain_depth_in_discussion", "communication_ability"],
+      "failure_modes": [
+        "CFP selection has well-documented bias toward known names, funded travel, and visa-privileged passports -- a talk is a strong positive, absence is close to meaningless.",
+        "Vendor-sponsored slots are purchased, not selected. Distinguish sponsored tracks from CFP-selected tracks or the signal inverts.",
+        "Highly fragmented; no central index. Coverage is inherently incomplete and should be reported as such."
+      ],
+      "bias": {
+        "misses": ["people who cannot travel or obtain visas", "caregivers", "non-native-English speakers at English-language conferences", "anyone whose employer will not fund attendance"],
+        "note": "This is a source where PRESENCE ADDS and ABSENCE MUST BE HARD-CODED AS UNKNOWN. Getting this wrong makes the registry a privilege detector."
+      }
+    },
+    {
+      "id": "technical_blog",
+      "name": "Personal and technical blogs",
+      "enabled": true,
+      "tier": 2,
+      "event_source": "web",
+      "access": {
+        "kind": "search_plus_feed",
+        "endpoint": "Tavily discovery, then direct RSS/Atom fetch",
+        "auth": "none",
+        "rate_limit": "n/a per-site; respect each site's robots.txt at fetch time",
+        "rate_limit_status": "n/a",
+        "scrape_permitted": "Per-site robots.txt is authoritative and must be checked and RECORDED in the fetch ledger before every fetch."
+      },
+      "include_domains": ["substack.com", "medium.com", "dev.to", "hashnode.dev", "ghost.io", "github.io", "bearblog.dev", "write.as"],
+      "observed_at": {
+        "field": "RSS/Atom <published> or JSON-LD datePublished",
+        "quality": "soft",
+        "note": "Prefer the feed's published date. If only a rendered page date exists, it is editable by the author -- flag integrity_flags:['date_inferred'] and use the earliest defensible date. NEVER stamp now()."
+      },
+      "freshness": "days",
+      "uniquely_provides": "The best evidence of THINKING QUALITY and scope discipline: a post-mortem describing what the author got wrong, a design doc showing considered alternatives and stated non-goals, a benchmark with a published methodology. Also the primary channel for non-English builders, who blog on regional platforms long before they appear anywhere anglophone.",
+      "signals": ["explains_hard_idea_simply", "intellectual_honesty", "scope_discipline", "problem_selection", "technical_depth"],
+      "failure_modes": [
+        "Cheap to generate at volume with an LLM, which has largely destroyed the value of blog EXISTENCE as a signal. Only posts that reference a verifiable artifact -- a repo, a benchmark, a paper -- carry weight.",
+        "Backdating is trivial on self-hosted platforms. A blog post's date must never be the sole basis for an as_of-sensitive conclusion.",
+        "Highest injection-risk surface in the registry: a founder who knows they are being evaluated can plant instructions. sourcing/sanitize.py is non-optional here."
+      ],
+      "bias": {
+        "misses": ["builders who publish in closed communities (WeChat, Telegram, private Slack)", "people who simply do not write"]
+      }
+    },
+    {
+      "id": "regional_dev",
+      "name": "Regional developer communities (non-anglosphere)",
+      "enabled": true,
+      "tier": 2,
+      "event_source": "web",
+      "access": {
+        "kind": "mixed",
+        "endpoint": "Qiita API v2 (https://qiita.com/api/v2/); Zenn RSS; Habr; V2EX API; Juejin; Gitee; TowardsAI-style regional aggregators",
+        "auth": "Qiita token optional but strongly recommended",
+        "rate_limit": "Qiita v2: reported 1,000 req/hr authenticated, 60 req/hr per IP unauthenticated. Others UNVERIFIED.",
+        "rate_limit_status": "Qiita VERIFIED VIA SECONDARY SEARCH; others UNVERIFIED",
+        "rate_limit_source": "https://qiita.com/api/v2/docs",
+        "scrape_permitted": "Qiita has a documented public API. Zenn is RSS-accessible. Gitee/Juejin/V2EX terms are UNVERIFIED -- do not crawl them at volume until someone reads the ToS."
+      },
+      "include_domains": ["qiita.com", "zenn.dev", "habr.com", "v2ex.com", "juejin.cn", "gitee.com", "codeberg.org", "sourcehut.org", "gitlab.com"],
+      "observed_at": {
+        "field": "created_at (Qiita) / RSS published",
+        "quality": "good for Qiita, soft elsewhere",
+        "note": "Non-Latin names must survive normalization unchanged. Silently ASCII-folding a name is the Type 6 failure mode named in B.md -- flag integrity_flags:['transliterated_name'] and keep the original."
+      },
+      "freshness": "days",
+      "uniquely_provides": "The only route to the founder this product exists to find. A builder in Tokyo, Sao Paulo, Lagos or Shenzhen may have a deep, sustained, publicly-documented body of work that produces ZERO hits on GitHub-trending, HN, and arXiv. Excluding this tier does not make the registry neutral -- it makes it a detector for Bay-Area-adjacency.",
+      "signals": ["technical_depth", "users_actually_served", "sustained_commit_substance", "domain_depth_in_discussion"],
+      "failure_modes": [
+        "Requires non-English processing; naive keyword matching returns nothing and the failure is SILENT, which is the worst kind.",
+        "Coverage is thin and uneven -- we cover Japan and Russia and China partially, and Africa, South Asia, Latin America and MENA barely at all. This is stated in coverage_gaps rather than papered over.",
+        "Identity resolution across scripts is genuinely hard; keep AMBIGUOUS rather than merging on a transliteration match."
+      ],
+      "bias": {
+        "misses": ["most of the Global South", "anywhere the primary developer community lives inside a closed messaging app"],
+        "note": "This source is enabled specifically to REDUCE the registry's bias, not because its data quality is high. It is a deliberate quality-for-coverage trade."
+      }
+    },
+    {
+      "id": "hf_hub",
+      "name": "Hugging Face Hub",
+      "enabled": true,
+      "tier": 2,
+      "event_source": "web",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://huggingface.co/api/",
+        "auth": "HF_TOKEN strongly recommended -- anonymous limits are materially lower",
+        "rate_limit": "Per 5-minute fixed window: anonymous 500 API / 3,000 resolver / 100 pages per IP; free user 1,000 / 5,000 / 200; PRO 2,500 / 12,000 / 400. Returns HTTP 429 with RateLimit headers.",
+        "rate_limit_status": "VERIFIED",
+        "rate_limit_source": "https://huggingface.co/docs/hub/rate-limits",
+        "scrape_permitted": "Documented public API; use the huggingface_hub client which handles 429 backoff automatically."
+      },
+      "include_domains": ["huggingface.co"],
+      "observed_at": {
+        "field": "repo createdAt / commit dates in the model or dataset repo",
+        "quality": "authoritative",
+        "note": "Git-backed, so the same author-vs-committer caution as GitHub applies."
+      },
+      "freshness": "minutes",
+      "uniquely_provides": "For AI-infra specifically, the artifact that GitHub misses: published models, datasets, evals and Spaces. Downloads and community discussion tabs give an adoption signal for ML work that has no package-registry footprint. Also the partial successor to Papers with Code's paper-to-code linkage.",
+      "signals": ["users_actually_served", "technical_depth", "shipped_artifact_public_launch", "maintenance_after_launch"],
+      "failure_modes": [
+        "Download counts include automated evaluation harnesses and are inflatable.",
+        "Uploading someone else's fine-tune is near-zero-cost -- weight ORIGINAL training/eval artifacts and repos with real commit history, not model card presence.",
+        "Only covers the ML slice of AI-infra; a founder building an inference runtime or a database may have no presence."
+      ],
+      "bias": {
+        "misses": ["non-ML infra founders", "closed-weight commercial work"]
+      }
+    },
+    {
+      "id": "show_hn",
+      "name": "Show HN (treated as a distinct surface)",
+      "enabled": true,
+      "tier": 2,
+      "event_source": "hn",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://hacker-news.firebaseio.com/v0/showstories.json + Algolia tag filter",
+        "auth": "none",
+        "rate_limit": "inherits hn",
+        "rate_limit_status": "inherits hn",
+        "scrape_permitted": "yes, same as hn"
+      },
+      "include_domains": ["news.ycombinator.com"],
+      "observed_at": { "field": "item.time", "quality": "authoritative" },
+      "freshness": "near real-time",
+      "uniquely_provides": "A dated, public LAUNCH EVENT paired with the founder's unscripted real-time response to strangers attacking their work. This pairing -- artifact plus conduct under fire, both timestamped -- exists nowhere else and is the highest-value soft-signal artifact in the whole registry.",
+      "signals": ["shipped_artifact_public_launch", "handles_criticism", "user_support_conduct", "scope_discipline", "concedes_valid_counterargument"],
+      "failure_modes": [
+        "Comment volume correlates with front-page luck, not quality -- normalize conduct signals by thread size or a lucky launch dominates the assessment.",
+        "Sockpuppet supportive comments are possible; weight the FOUNDER'S OWN replies, which are attributable, over crowd reaction, which is not.",
+        "Same anglosphere bias as hn."
+      ],
+      "bias": { "misses": ["non-English launches", "B2B/enterprise products with no self-serve artifact to show"] }
+    },
+    {
+      "id": "stackoverflow",
+      "name": "Stack Overflow / Stack Exchange",
+      "enabled": false,
+      "tier": 3,
+      "event_source": "web",
+      "access": {
+        "kind": "api",
+        "endpoint": "https://api.stackexchange.com/2.3/",
+        "auth": "app key recommended",
+        "rate_limit": "UNVERIFIED -- api.stackexchange.com could not be fetched from this environment and the figures returned by search were unsourced. Commonly cited as 300/day without a key and 10,000/day with one; TREAT AS UNVERIFIED and confirm before use.",
+        "rate_limit_status": "UNVERIFIED",
+        "rate_limit_source": "https://api.stackexchange.com/docs/throttle",
+        "scrape_permitted": "API yes. Content is CC BY-SA, so quoted spans need attribution if displayed."
+      },
+      "include_domains": ["stackoverflow.com", "stackexchange.com", "serverfault.com"],
+      "observed_at": { "field": "creation_date (unix)", "quality": "authoritative" },
+      "freshness": "minutes",
+      "uniquely_provides": "Explanation quality on a narrow technical question, and a long-tail record of helping strangers -- a genuine soft signal for patience and pedagogy.",
+      "signals": ["explains_hard_idea_simply", "user_support_conduct", "domain_depth_in_discussion"],
+      "failure_modes": [
+        "Site activity has declined sharply post-LLM; recency is weak and a founder active in 2016 tells you little about them now.",
+        "Reputation is overwhelmingly a tenure-and-topic-popularity artifact, not a skill measure -- it is a VISIBILITY term at best.",
+        "Answering questions is weakly related to founding a company; the signal-to-effort ratio is the worst of any tier-1/2 candidate."
+      ],
+      "bias": { "misses": ["anyone who joined the industry after ~2020"] },
+      "disabled_reason": "Kept in the registry but OFF by default. The identity-resolution and fetch cost is real, the marginal signal over GitHub and HN is small, and its rate limits are UNVERIFIED. Enable only if a specific founder's footprint is otherwise empty."
+    },
+    {
+      "id": "web_enrichment",
+      "name": "Tavily general web enrichment",
+      "enabled": true,
+      "tier": 4,
+      "event_source": "web",
+      "access": {
+        "kind": "search_api",
+        "endpoint": "core/search.py -> Tavily",
+        "auth": "TAVILY_API_KEY",
+        "rate_limit": "plan-dependent; search_depth='advanced' costs 2 credits vs 1",
+        "rate_limit_status": "VERIFIED (parameter semantics)",
+        "rate_limit_source": "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+        "api_note": "include_domains accepts up to 300 domains, exclude_domains up to 150, max_results 0-20 (default 5). NOTE: core/search.py does not currently forward include_domains/exclude_domains -- sourcing/ must add passthrough for this registry's domain restrictions to take effect.",
+        "scrape_permitted": "Tavily fetches on our behalf; per-target robots.txt still governs any direct follow-up fetch."
+      },
+      "include_domains": [],
+      "observed_at": {
+        "field": "published_at when present, otherwise inferred",
+        "quality": "poor",
+        "note": "Tavily results rarely carry a trustworthy publish date. Per B.md: set the earliest defensible date and flag integrity_flags:['date_inferred']. Do NOT silently stamp now() -- that poisons the backtest invisibly until H14."
+      },
+      "freshness": "variable and unstated",
+      "uniquely_provides": "DISCOVERY, not evidence. Its job is to find the URL of a footprint the four APIs cannot see -- a personal site, a regional blog, a conference bio, a non-English writeup -- so that a tier-1/2 fetch can then be performed against it.",
+      "signals": [],
+      "failure_modes": [
+        "Ranking is opaque and popularity-weighted, reproducing the exact bias this registry is trying to escape.",
+        "Snippets are truncated and may not appear verbatim in the underlying page -- a snippet alone is NOT a citable span.",
+        "SEO-farm and LLM-generated pages are common; a result must be promoted to a real fetched document before anything is cited from it."
+      ],
+      "bias": { "misses": ["anything behind auth", "anything not indexed", "low-PageRank personal sites -- i.e. exactly the invisible founder"] },
+      "promotion_rule": "A Tavily result may NEVER be the sole basis for a scored signal. It must be promoted: fetch the URL, record it in the fetch ledger, and cite the fetched document."
+    },
+
+    {
+      "id": "linkedin",
+      "name": "LinkedIn",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "NO. robots.txt states: 'The use of robots or other automated means to access LinkedIn without the express permission of LinkedIn is strictly prohibited.' /profile/, /me/, /connections*, /messaging/ are all disallowed. Only LinkedInBot has Allow: /.",
+        "rate_limit_status": "n/a",
+        "tos_source": "https://www.linkedin.com/robots.txt"
+      },
+      "rejected_because": "Two independent reasons, either sufficient. (1) LEGAL/ToS: automated access is expressly prohibited by robots.txt; the hiQ line of cases concerned CFAA liability for public data and did not make it contract-permissible. (2) SUBSTANTIVE, and this is the one that matters: a LinkedIn profile is a self-authored, unverified, employer-and-school-shaped document. Strip the employer brand, the school, and the title inflation -- all of which Invariant #3 forbids us from scoring -- and essentially nothing remains that is not better evidenced elsewhere. Tenure dates are the only residue, and those are self-reported. It is a pedigree proxy almost by construction, and its inclusion would systematically favor the credentialed candidate over the builder, which inverts the product's entire thesis."
+    },
+    {
+      "id": "crunchbase",
+      "name": "Crunchbase",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "API requires a paid licence; the free API tier was eliminated in 2025 and full access requires an Enterprise or Applications licence.",
+        "rate_limit_status": "UNVERIFIED (paid, not evaluated)",
+        "tos_source": "https://about.crunchbase.com/products/crunchbase-api"
+      },
+      "rejected_because": "Crunchbase's core content is funding rounds and investor names -- precisely the fields Invariant #3 bans from scoring. What remains after that redaction is a company description and a headcount estimate, both self-submitted and stale. Worse, it is structurally LAGGING: a company appears in Crunchbase after it raises, but this product's stated purpose is to find the founder BEFORE anyone has emailed them. A source whose coverage begins at the moment of institutional validation cannot contribute to pre-institutional discovery. Also now paywalled, so the cost is nonzero for a source that would be redacted down to near-nothing."
+    },
+    {
+      "id": "papers_with_code",
+      "name": "Papers with Code",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "n/a -- service sunset",
+        "rate_limit_status": "n/a",
+        "tos_source": "https://github.com/paperswithcode/paperswithcode-data"
+      },
+      "rejected_because": "DEAD SOURCE. Sunset by Meta in July 2025; paperswithcode.com now redirects to Hugging Face. Its most valuable feature for us -- the verified paper-to-repository link, which is exactly the 'they published it AND they built it' conjunction -- no longer has a live successor with comparable coverage. The historical dump at paperswithcode/paperswithcode-data is frozen and could serve as a STATIC BACKFILL for pre-2025 as_of windows in the backtest, but it must never be treated as current. Live substitute: Hugging Face Hub plus arXiv, which together recover part of the linkage."
+    },
+    {
+      "id": "discord_slack",
+      "name": "Discord / Slack community archives",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "NO for the general case. Discord's ToS prohibits unauthorized automated data collection; self-botting is a bannable offence. Slack workspace content is private to the workspace.",
+        "rate_limit_status": "n/a",
+        "tos_source": "https://discord.com/terms"
+      },
+      "rejected_because": "Rejected on ETHICS first, legality second, quality third. Community chat is a semi-private space where people debug, vent, and ask naive questions with a reasonable expectation that it is not being mined to evaluate them as an investment. Harvesting it would be a genuine consent violation, and the reputational cost to this product if it surfaced would exceed any signal gained. Legally, automated collection breaches Discord's ToS and Slack workspace privacy. Technically, it is also the single easiest surface to astroturf. NARROW EXCEPTION worth revisiting: publicly-archived, explicitly-public mailing lists and forums where participants know the archive is public and indexed -- LKML, Apache lists, Discourse instances with open archives. Those are a different consent situation and could be added as tier 3."
+    },
+    {
+      "id": "producthunt",
+      "name": "Product Hunt",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "endpoint": "https://api.producthunt.com/v2/api/graphql",
+        "scrape_permitted": "Documented GraphQL API with a non-expiring developer token; rate limit reported as 6,250 complexity points per 15 min.",
+        "rate_limit_status": "UNVERIFIED (secondary sources disagree: 6,250 complexity points vs 900 requests per 15 min)",
+        "tos_source": "https://api.producthunt.com/v2/docs"
+      },
+      "rejected_because": "Access is fine; the SIGNAL is the problem, and it is also cut item #1 in SHARED.md. Product Hunt rank is a launch-marketing outcome -- it measures the size of the audience a founder could mobilize on one day, which correlates with existing network and audience, i.e. the visibility term we explicitly SUBTRACT in hidden-ranking. Upvotes are openly traded. For deep AI-infra and dev-tools, the relevant launch surface is Show HN or a package registry release, both of which we already cover with better timestamps and far better conduct signal. Including PH would actively pull the ranking toward the well-connected founder."
+    },
+    {
+      "id": "twitter_x",
+      "name": "X / Twitter",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "No free research tier; API access is paid and tiered, and scraping is prohibited by ToS.",
+        "rate_limit_status": "UNVERIFIED (paid, not evaluated)",
+        "tos_source": "https://developer.x.com/en/products/x-api"
+      },
+      "rejected_because": "Cost is real and the signal is close to pure visibility. Follower counts and engagement measure audience, which is the term this product subtracts. Whatever genuine technical discourse happens there is nearly impossible to separate from performance, and the platform is the most heavily astroturfed surface considered. If a founder's technical argument matters, it will exist as a blog post, a repo, or an HN comment -- all cheaper, better-timestamped, and less gamed."
+    },
+    {
+      "id": "google_scholar",
+      "name": "Google Scholar",
+      "enabled": false,
+      "tier": "rejected",
+      "event_source": null,
+      "access": {
+        "scrape_permitted": "NO. No public API; aggressive anti-bot measures; automated access violates Google ToS.",
+        "rate_limit_status": "n/a",
+        "tos_source": "https://scholar.google.com/robots.txt"
+      },
+      "rejected_because": "No API, scraping prohibited and technically blocked. Its distinctive field -- citation count -- is a fame-and-tenure metric that would fail SHARED.md's own H12 fame-vs-trajectory gate. arXiv and OpenAlex cover the underlying publication facts through legitimate channels with real v1 timestamps."
+    }
+  ],
+
+  "signals": {
+    "_scale": "magnitude is a rough weight in [0,1] on the contribution to a single axis, for the per-source attribution UI. absence: MEANINGFUL = its lack is itself evidence; UNKNOWN = its lack tells us nothing; CONDITIONAL = meaningful only if the predicate holds.",
+
+    "technical": [
+      {
+        "id": "sustained_commit_substance",
+        "sources": ["github", "regional_dev"],
+        "direction": "ADD",
+        "magnitude": 0.8,
+        "evidences": "Can this person actually build and keep building. Measured on diff entropy, file diversity, test presence and whether commits touch real logic -- never on commit count.",
+        "gaming": "Trivially gamed on volume (whitespace churn, vendored deps, generated code). Expensive on substance: faking months of coherent, tested, semantically-connected changes to a system that compiles is close to the cost of just building it.",
+        "absence": "CONDITIONAL -- meaningful only if the founder's own claim implies public code. An infra founder claiming a shipped distributed system with no code anywhere is a red flag; a designer with no GitHub is not."
+      },
+      {
+        "id": "test_discipline",
+        "sources": ["github"],
+        "direction": "ADD",
+        "magnitude": 0.4,
+        "evidences": "Engineering maturity and willingness to do unglamorous work.",
+        "gaming": "Cheap to add trivial tests; expensive to maintain a suite that actually gates a real CI over time. Weight CI-gating and test-changes-alongside-logic, not test file count.",
+        "absence": "UNKNOWN at prototype stage; mildly SUBTRACT (0.2) if the founder claims production reliability."
+      },
+      {
+        "id": "technical_depth",
+        "sources": ["arxiv", "technical_blog", "hf_hub", "conference_talks", "regional_dev"],
+        "direction": "ADD",
+        "magnitude": 0.7,
+        "evidences": "Genuine command of a hard problem: a paper, a benchmark with stated methodology, a from-scratch implementation of something non-obvious.",
+        "gaming": "LLM-generated depth-shaped prose is now cheap. Gaming becomes expensive when the claim is tied to a reproducible artifact -- runnable code, a published benchmark harness, a peer-reviewed venue.",
+        "absence": "UNKNOWN. Many excellent infra founders have published nothing."
+      },
+      {
+        "id": "release_cadence",
+        "sources": ["github", "package_registries"],
+        "direction": "ADD",
+        "magnitude": 0.5,
+        "evidences": "Shipping rhythm over months. The derivative matters more than the level.",
+        "gaming": "Version-bump spam is cheap; use versions that change dependent-visible behavior. Moderately expensive to fake.",
+        "absence": "CONDITIONAL on the artifact being a released package at all."
+      },
+      {
+        "id": "problem_selection",
+        "sources": ["arxiv", "technical_blog", "github"],
+        "direction": "ADD",
+        "magnitude": 0.6,
+        "evidences": "Working on something that was hard and non-obvious BEFORE it was consensus. Best measured by comparing observed_at against when the topic became crowded.",
+        "gaming": "Cannot be gamed retroactively without backdating, which the observed_at discipline plus git history makes detectable. One of the most expensive signals to fake.",
+        "absence": "UNKNOWN."
+      },
+      {
+        "id": "coauthor_graph_edge",
+        "sources": ["arxiv", "github"],
+        "direction": "ADD",
+        "magnitude": 0.5,
+        "evidences": "Third-party-verified collaboration; feeds B's PPR. Damp by 1/n on author count.",
+        "gaming": "Requires a real collaborator to cooperate, and for arXiv a real publication. Expensive.",
+        "absence": "UNKNOWN.",
+        "warning": "Proximity to a well-known person must feed PPR ONLY, never a direct score bump -- otherwise it becomes an investor/employer-adjacency proxy and violates Invariant #3 in spirit."
+      }
+    ],
+
+    "soft_business": [
+      {
+        "id": "handles_criticism",
+        "sources": ["show_hn", "hn", "github"],
+        "direction": "ADD",
+        "magnitude": 0.8,
+        "evidences": "Public, timestamped, unscripted behavior under attack: a Show HN thread where someone calls the architecture wrong, a GitHub issue where a user reports the tool ate their data. Extract the CRITIC's message and the FOUNDER'S REPLY as a paired span. Classify the reply: engages the substance / concedes / deflects / attacks the critic / silent.",
+        "gaming": "Nearly impossible to fake retroactively -- the thread is timestamped, public, and the critic is a third party who cannot be co-opted. A founder can behave well knowing they are watched, but behaving well consistently across years of threads IS the trait. This is the most game-resistant soft signal available.",
+        "absence": "UNKNOWN. Many founders have never been publicly criticized.",
+        "negative_form": "Attacking the critic, deleting the thread, or a pattern of dismissing bug reports is a genuine SUBTRACT at magnitude 0.7."
+      },
+      {
+        "id": "explains_hard_idea_simply",
+        "sources": ["hn", "technical_blog", "conference_talks", "stackoverflow", "github"],
+        "direction": "ADD",
+        "magnitude": 0.7,
+        "evidences": "A README that states the problem before the solution; an HN comment that answers a novice without condescension; a talk that builds intuition before formalism. Scoreable as: does the artifact define its terms, state a non-goal, and give a concrete example.",
+        "gaming": "LLM assistance makes polished writing cheap, which has genuinely degraded this signal for text. It holds up better for RECORDED TALKS and for LIVE unscripted Q&A replies, where response latency and interactivity make ghostwriting impractical. Weight live/interactive artifacts above composed ones.",
+        "absence": "UNKNOWN."
+      },
+      {
+        "id": "users_actually_served",
+        "sources": ["package_registries", "hf_hub", "github"],
+        "direction": "ADD",
+        "magnitude": 0.8,
+        "evidences": "Not downloads -- DEPENDENTS. Other people's published packages that declare a dependency on yours, third-party repos importing your library, issues filed by strangers with real usage context, forks that diverge rather than mirror.",
+        "gaming": "Downloads are cheap to inflate from CI. Dependents are expensive: each one requires another human to publish a package that stakes their own build on yours. Stranger-filed issues with reproduction steps are similarly costly to manufacture at volume.",
+        "absence": "CONDITIONAL -- MEANINGFUL if the founder claims traction or users; UNKNOWN pre-launch."
+      },
+      {
+        "id": "scope_discipline",
+        "sources": ["github", "show_hn", "technical_blog", "package_registries"],
+        "direction": "ADD",
+        "magnitude": 0.6,
+        "evidences": "Documented NON-GOALS. Closed feature requests with a courteous stated reason. A README that says what the tool deliberately does not do. A v1.0 that is smaller than the v0.x roadmap implied.",
+        "gaming": "Hard to fake because it is evidenced by SAYING NO in public, which has a real social cost the gamer is unwilling to pay. Adding a non-goals section is cheap; a two-year issue history of consistent, reasoned refusals is not.",
+        "absence": "UNKNOWN.",
+        "negative_form": "A README listing twelve unshipped roadmap items, or an issue tracker where every request is accepted, SUBTRACTS at 0.4."
+      },
+      {
+        "id": "user_support_conduct",
+        "sources": ["github", "hn", "show_hn", "stackoverflow"],
+        "direction": "ADD",
+        "magnitude": 0.6,
+        "evidences": "Median time-to-first-response on issues from non-collaborators; proportion of stranger-issues answered at all; tone of the answer. Time-to-response is directly computable from the API and needs no LLM judgement.",
+        "gaming": "Response time is cheap to game for a short window, expensive to sustain for years. Use a MEDIAN OVER A LONG WINDOW, not a recent sample, and the gaming cost rises sharply.",
+        "absence": "CONDITIONAL on having public issues at all."
+      },
+      {
+        "id": "hiring_and_collaborator_retention",
+        "sources": ["github"],
+        "direction": "ADD",
+        "magnitude": 0.5,
+        "evidences": "Can this person attract and KEEP good people. Measured as: number of distinct non-trivial outside contributors, and crucially whether they came back -- contributors with commits spanning >6 months. Merged outside PRs with review conversation shows they can delegate rather than rewrite.",
+        "gaming": "Requires other real people to donate sustained effort. Among the most expensive signals in the registry to fabricate. Sockpuppet contributors are detectable by account age and cross-repo activity.",
+        "absence": "UNKNOWN for a solo pre-seed founder -- explicitly NOT a negative.",
+        "negative_form": "A pattern of outside PRs left unreviewed for months, or closed-and-reimplemented-by-the-owner, SUBTRACTS at 0.4 -- it predicts an inability to delegate."
+      },
+      {
+        "id": "intellectual_honesty",
+        "sources": ["technical_blog", "hn", "github", "show_hn"],
+        "direction": "ADD",
+        "magnitude": 0.7,
+        "evidences": "A public post-mortem naming their own error. A benchmark that reports the case where their tool LOSES. A comment conceding the counterargument was right. A CHANGELOG entry saying 'this was a mistake, reverting.'",
+        "gaming": "Performative humility is cheap and increasingly common. What is expensive: a SPECIFIC, COSTLY, CHECKABLE admission -- naming the exact benchmark they lose, the exact bug they shipped. Require the admission to be falsifiable against another artifact, or do not count it.",
+        "absence": "UNKNOWN."
+      },
+      {
+        "id": "breaking_change_communication",
+        "sources": ["package_registries", "github"],
+        "direction": "ADD",
+        "magnitude": 0.4,
+        "evidences": "Semver respected; breaking changes carry a migration guide and a deprecation period. This is empathy for users made legible in a machine-readable artifact.",
+        "gaming": "Cheap to do once, and honestly this is fine -- doing it consistently IS the desired behavior, so 'gaming' it converges on the trait.",
+        "absence": "CONDITIONAL on having published a breaking release."
+      },
+      {
+        "id": "shipped_artifact_public_launch",
+        "sources": ["show_hn", "package_registries", "hf_hub"],
+        "direction": "ADD",
+        "magnitude": 0.6,
+        "evidences": "A dated moment where they put a working thing in front of strangers and asked for judgement.",
+        "gaming": "Cheap to launch something trivial; the signal is in what happened next -- maintenance_after_launch and handles_criticism. Launch alone should never carry weight on its own.",
+        "absence": "UNKNOWN."
+      },
+      {
+        "id": "maintenance_after_launch",
+        "sources": ["package_registries", "github", "hf_hub"],
+        "direction": "ADD",
+        "magnitude": 0.7,
+        "evidences": "Patch releases and bug fixes landing 3, 6, 12 months AFTER the launch spike. The clearest available separator between a demo and a product.",
+        "gaming": "Requires sustained real effort against real bug reports over calendar time that cannot be compressed. Very expensive to fake -- arguably the best cost-to-signal ratio in the registry.",
+        "absence": "CONDITIONAL -- MEANINGFUL and SUBTRACTS at 0.5 if a launch exists and nothing followed it. This is the 'abandoned demo' detector."
+      },
+      {
+        "id": "peer_selection",
+        "sources": ["conference_talks", "arxiv"],
+        "direction": "ADD",
+        "magnitude": 0.3,
+        "evidences": "A third party with a reputation to protect chose to platform this person.",
+        "gaming": "Sponsored slots are purchasable -- MUST distinguish CFP-selected from sponsored, or the signal inverts.",
+        "absence": "UNKNOWN, and deliberately weighted LOW because CFP selection is visa-, funding- and network-biased. Treating its absence as negative would make this a privilege detector."
+      }
+    ],
+
+    "integrity_negative": [
+      {
+        "id": "claim_without_any_artifact",
+        "sources": ["deck", "github", "package_registries", "arxiv", "web_enrichment"],
+        "direction": "SUBTRACT",
+        "magnitude": 0.6,
+        "evidences": "A specific, checkable technical claim in the deck ('we built a distributed inference scheduler', 'we serve 10k QPS') with zero corroborating artifact across every enabled source after a genuine search attempt.",
+        "gaming": "n/a -- this is the anti-gaming signal.",
+        "absence": "n/a",
+        "critical_note": "This fires ONLY when the claim itself implies a public artifact should exist AND the search was actually attempted and returned results that were unrelated. If the search errored or returned nothing, the correct state is UNVERIFIABLE, never CONTRADICTED -- see intelligence/validator.py. Do not let a rate-limit failure become a founder penalty."
+      },
+      {
+        "id": "burst_without_substance",
+        "sources": ["github"],
+        "direction": "SUBTRACT",
+        "magnitude": 0.5,
+        "evidences": "A commit spike with low diff entropy, no test changes, single-file concentration, or whitespace-only churn.",
+        "gaming": "n/a",
+        "absence": "n/a",
+        "critical_note": "Burst ALONE must never fire this -- real fast builders spike too. Requires the substance test to fail as well (B.md burst.py)."
+      },
+      {
+        "id": "injection_attempt",
+        "sources": ["deck", "technical_blog", "web_enrichment"],
+        "direction": "SUBTRACT",
+        "magnitude": 0.9,
+        "evidences": "Imperative-to-model phrasing, role tokens, zero-width characters, white-on-white text, base64 blobs in submitted or fetched content.",
+        "gaming": "n/a",
+        "absence": "n/a",
+        "critical_note": "Strip, do not reject. Emit an INTEGRITY event quoting the exact offending span. Distinguish a deliberate injection in a SUBMITTED deck (severe) from boilerplate on a third-party page we happened to fetch (not the founder's fault -- do not penalize them for it)."
+      }
+    ]
+  },
+
+  "coverage_gaps": {
+    "statement": "This registry systematically misses the following people. This list is a deliverable, not a disclaimer -- it should be surfaced in the UI next to any low-evidence assessment so a thin dossier reads as 'we could not see them' rather than 'they are weak'.",
+    "misses": [
+      {
+        "who": "Founders outside the anglosphere with no English-language footprint",
+        "why": "Six of nine enabled sources are English-dominant. regional_dev covers Japan, Russia and China only partially, and Africa, South Asia, Latin America and MENA barely at all.",
+        "mitigation": "regional_dev + Tavily multilingual queries. Genuinely partial. This is the largest known gap and it is exactly the Type 6 founder the pitch closes on.",
+        "severity": "high"
+      },
+      {
+        "who": "Founders whose work is closed-source -- defense, finance, healthcare, or any employer with an IP assignment",
+        "why": "Every tier-1 source reads public artifacts by construction.",
+        "mitigation": "None from public sources. The Proof Protocol (intelligence/proof.py) exists precisely for this case -- when evidence is absent, ISSUE A CHALLENGE rather than infer a low score.",
+        "severity": "high"
+      },
+      {
+        "who": "Non-code technical founders -- hardware, silicon, robotics, wet-lab, clinical",
+        "why": "The registry is overwhelmingly software-artifact-shaped.",
+        "mitigation": "arXiv and conference talks partially cover hardware and silicon. Wet-lab and clinical are effectively uncovered.",
+        "severity": "medium"
+      },
+      {
+        "who": "Career-switchers and late starters",
+        "why": "Nearly every signal rewards a long artifact history. Someone two years into building has a thin record by construction, not by weakness.",
+        "mitigation": "Prefer TRAJECTORY (the derivative) over LEVEL wherever a signal supports it. FounderScore already carries a trend term -- use it.",
+        "severity": "medium"
+      },
+      {
+        "who": "Builders who work under a pseudonym or refuse identity linkage",
+        "why": "Entity resolution cannot span a deliberate identity break, and should not try to.",
+        "mitigation": "Keep AMBIGUOUS. Do not de-anonymize. Accept the coverage loss -- this is a correct refusal, not a bug.",
+        "severity": "low"
+      },
+      {
+        "who": "People whose community life happens inside closed messaging apps -- WeChat, Telegram, Discord, private Slack",
+        "why": "Deliberately not collected, on consent grounds. See the discord_slack rejection.",
+        "mitigation": "None, by choice.",
+        "severity": "medium"
+      },
+      {
+        "who": "Anyone with caregiving responsibilities, visa constraints, or no travel budget",
+        "why": "conference_talks and, to a lesser degree, sustained off-hours commit activity both encode free time and mobility as if they were merit.",
+        "mitigation": "peer_selection is deliberately weighted at 0.3 and its absence is hard-coded UNKNOWN. Do NOT add off-hours or weekend commit activity as a signal -- it is a proxy for having no dependents.",
+        "severity": "medium"
+      }
+    ]
+  }
+}

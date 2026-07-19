@@ -4,6 +4,13 @@ The absence classifier is the delicate part: signal-absent-because-irrelevant
 (a designer with no GitHub) vs signal-absent-and-suspicious (an infra founder
 claiming a distributed system with no code anywhere). Get this wrong and we punish
 exactly the founders this thesis exists to find.
+
+The abstention boundary is the second delicate part, and it is no longer a constant.
+When a conformal calibration is supplied (see intelligence/conformal.py), the gate
+abstains because a 1-alpha prediction interval straddles the clearing threshold — a
+reason it can state out loud — and it PROCEEDs when that interval sits wholly above the
+threshold. When the calibration cannot be earned, the base policy below still runs and
+the rationale says the conformal layer was not calibrated. The fallback is never silent.
 """
 
 from __future__ import annotations
@@ -12,6 +19,8 @@ from datetime import datetime
 from uuid import UUID
 
 from intelligence import flags
+from intelligence import conformal
+from intelligence.conformal import ConformalCalibration
 from schema.events import Event, EventKind, FounderScore, GateDecision, GateOutcome, Source
 
 _TECHNICAL_CLAIM_TERMS = (
@@ -30,9 +39,19 @@ def _claim_text(event: Event) -> str:
 
 
 def decide(
-    company_id: UUID, founder_score: FounderScore, events: list[Event], as_of: datetime
+    company_id: UUID,
+    founder_score: FounderScore,
+    events: list[Event],
+    as_of: datetime,
+    *,
+    calibration: ConformalCalibration | None = None,
 ) -> GateDecision:
-    """Pure decision policy. Confidence remains explicit through the founder band."""
+    """Pure decision policy. Confidence remains explicit through the founder band.
+
+    ``calibration`` is optional and defaults to off: with no calibration the historical
+    constant-threshold policy runs unchanged. Supply one and the conformal interval
+    governs the abstention boundary instead, with its own reasoning attached.
+    """
     evidence = [
         event
         for event in events
@@ -65,39 +84,66 @@ def decide(
     )
     suspicious_absence = has_technical_claim and not has_code_source
 
-    if founder_score.mu + founder_score.band < 0.45:
+    interval = calibration.interval(founder_score.mu, founder_score.band) if calibration else None
+    note = calibration.describe(interval) if calibration else None
+
+    def _decision(outcome: GateOutcome, rationale: str) -> GateDecision:
         return GateDecision(
             company_id=company_id,
-            outcome=GateOutcome.NO_CALL,
-            rationale="Even the upper confidence bound remains below the call threshold.",
+            outcome=outcome,
+            rationale=f"{rationale} {note}" if note else rationale,
             absence_is_suspicious=suspicious_absence,
+        )
+
+    if interval is not None:
+        # The conformal boundary supersedes the constants for exactly two calls: abstain
+        # when the interval straddles the threshold, proceed when it clears it outright.
+        # Everything below the threshold still runs the base ladder, so PROOF_PROTOCOL —
+        # "promising but thin, go get evidence" — keeps its meaning.
+        if interval.verdict == "ambiguous":
+            return _decision(
+                GateOutcome.NO_CALL,
+                "No call: the evidence cannot distinguish clearing from not clearing.",
+            )
+        if interval.verdict == "clears" and not suspicious_absence:
+            return _decision(
+                GateOutcome.PROCEED,
+                "Proceed: the calibrated interval clears the threshold outright.",
+            )
+
+    if founder_score.mu + founder_score.band < 0.45:
+        return _decision(
+            GateOutcome.NO_CALL,
+            "Even the upper confidence bound remains below the call threshold.",
         )
     if founder_score.mu >= 0.70 and founder_score.band <= 0.20:
-        return GateDecision(
-            company_id=company_id,
-            outcome=GateOutcome.PROCEED,
-            rationale="Capability evidence is strong enough and uncertainty is sufficiently narrow.",
-            absence_is_suspicious=suspicious_absence,
+        return _decision(
+            GateOutcome.PROCEED,
+            "Capability evidence is strong enough and uncertainty is sufficiently narrow.",
         )
     if suspicious_absence and founder_score.mu < 0.60:
-        return GateDecision(
-            company_id=company_id,
-            outcome=GateOutcome.NO_CALL,
-            rationale="A central technical claim lacks the directly relevant artifact evidence.",
-            absence_is_suspicious=True,
+        return _decision(
+            GateOutcome.NO_CALL,
+            "A central technical claim lacks the directly relevant artifact evidence.",
         )
-    return GateDecision(
-        company_id=company_id,
-        outcome=GateOutcome.PROOF_PROTOCOL,
-        rationale="Evidence is promising but too thin or uncertain; create a targeted proof.",
-        absence_is_suspicious=suspicious_absence,
+    return _decision(
+        GateOutcome.PROOF_PROTOCOL,
+        "Evidence is promising but too thin or uncertain; create a targeted proof.",
     )
 
 
-def evaluate(company_id: UUID, as_of: datetime) -> GateDecision:
-    """Store-backed wrapper. Every read and founder score is scoped to as_of."""
+def evaluate(
+    company_id: UUID, as_of: datetime, *, alpha: float = conformal.DEFAULT_ALPHA
+) -> GateDecision:
+    """Store-backed wrapper. Every read and founder score is scoped to as_of.
+
+    ``alpha`` is the conformal target error rate and is stated in the rationale. The
+    calibration is built from the labelled backtest cohort at the same cutoff, minus this
+    company, so nothing calibrates on the point it is judging.
+    """
     from memory import score, store
 
+    calibration = conformal.from_store(as_of, alpha=alpha).for_company(company_id)
     events = store.events(company_id=company_id, as_of=as_of)
     entity_ids = sorted(
         {event.entity_id for event in events if event.entity_id is not None}, key=str
@@ -120,4 +166,4 @@ def evaluate(company_id: UUID, as_of: datetime) -> GateDecision:
             rationale="Founder identity is ambiguous; resolve ownership before making a call.",
             absence_is_suspicious=False,
         )
-    return decide(company_id, founder_score, events, as_of)
+    return decide(company_id, founder_score, events, as_of, calibration=calibration)

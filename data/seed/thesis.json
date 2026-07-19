@@ -2,19 +2,52 @@
   "name": "AI infrastructure and developer tools",
   "updated_at": "2025-06-01T00:00:00+00:00",
   "sectors": [
-    {"id": "ai-infra", "label": "AI infrastructure", "weight": 0.45, "include": true},
-    {"id": "dev-tools", "label": "Developer tools", "weight": 0.35, "include": true},
-    {"id": "data-infra", "label": "Data infrastructure", "weight": 0.20, "include": true},
-    {"id": "consumer", "label": "Consumer", "weight": 0.0, "include": false},
-    {"id": "fintech", "label": "Fintech", "weight": 0.0, "include": false}
+    {
+      "id": "ai-infra",
+      "label": "AI infrastructure",
+      "weight": 0.45,
+      "include": true
+    },
+    {
+      "id": "dev-tools",
+      "label": "Developer tools",
+      "weight": 0.35,
+      "include": true
+    },
+    {
+      "id": "data-infra",
+      "label": "Data infrastructure",
+      "weight": 0.2,
+      "include": true
+    },
+    {
+      "id": "consumer",
+      "label": "Consumer",
+      "weight": 0.0,
+      "include": false
+    },
+    {
+      "id": "fintech",
+      "label": "Fintech",
+      "weight": 0.0,
+      "include": false
+    }
   ],
   "stage": {
-    "include": ["pre-seed", "seed"],
-    "exclude": ["series-a", "series-b+"],
+    "include": [
+      "pre-seed",
+      "seed"
+    ],
+    "exclude": [
+      "series-a",
+      "series-b+"
+    ],
     "note": "Pre-product is in scope. That is the whole point of the Proof Protocol."
   },
   "geo": {
-    "include": ["global"],
+    "include": [
+      "global"
+    ],
     "excluded_regions": [],
     "note": "Deliberately unrestricted. Geographic filters are the cheapest way to systematically miss the Type 6 founder."
   },
@@ -41,7 +74,13 @@
     "never": "blended_score"
   },
   "hard_filters": [
-    {"id": "no_pedigree", "description": "School, employer brand and investor name are excluded from every scoring input. Invariant #3."},
-    {"id": "as_of_scoped", "description": "Every read is as_of-scoped. Invariant #1."}
+    {
+      "id": "no_pedigree",
+      "description": "School, employer brand and investor name are excluded from every scoring input. Invariant #3."
+    },
+    {
+      "id": "as_of_scoped",
+      "description": "Every read is as_of-scoped. Invariant #1."
+    }
   ]
 }

@@ -129,6 +129,34 @@
         {
           "kind": "repo_activity",
           "source": "github",
+          "source_url": "https://github.com/tensorpage/pagekv/commits/main?since=2024-02-27",
+          "observed_at": "2024-02-27T09:20:00+00:00",
+          "evidence_span": "refactor: decouple block table from the allocator",
+          "payload": {
+            "repo": "tensorpage/pagekv",
+            "commits_30d": 63,
+            "files_touched": 31,
+            "net_lines": 2140,
+            "topic": "allocator/table split",
+            "stars": 1840,
+            "role": "owner"
+          }
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=39584112",
+          "observed_at": "2024-03-05T14:02:00+00:00",
+          "evidence_span": "Show HN: PageKV — paged KV-cache for long-context inference on commodity GPUs",
+          "payload": {
+            "points": 412,
+            "comments": 96,
+            "thread_id": "hn-39584112"
+          }
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
           "source_url": "https://github.com/tensorpage/pagekv/commits/main",
           "observed_at": "2024-04-11T08:45:00+00:00",
           "payload": {
@@ -189,6 +217,22 @@
         {
           "kind": "repo_activity",
           "source": "github",
+          "source_url": "https://github.com/tensorpage/pagekv/commits/main?since=2024-07-09",
+          "observed_at": "2024-07-09T16:15:00+00:00",
+          "evidence_span": "perf: reuse physical pages across generations",
+          "payload": {
+            "repo": "tensorpage/pagekv",
+            "commits_30d": 48,
+            "files_touched": 19,
+            "net_lines": 1580,
+            "topic": "cross-generation reuse",
+            "stars": 3120,
+            "role": "owner"
+          }
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
           "source_url": "https://github.com/tensorpage/pagekv/commits/main",
           "observed_at": "2024-09-09T09:30:00+00:00",
           "payload": {
@@ -205,6 +249,18 @@
           "confidence": 0.95
         },
         {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=41902330",
+          "observed_at": "2024-10-17T13:20:00+00:00",
+          "evidence_span": "PageKV v0.4: what we got wrong about eviction",
+          "payload": {
+            "points": 268,
+            "comments": 74,
+            "thread_id": "hn-41902330"
+          }
+        },
+        {
           "kind": "release",
           "source": "github",
           "source_url": "https://github.com/tensorpage/pagekv/releases/tag/v0.4.0",
@@ -218,6 +274,22 @@
           },
           "evidence_span": "v0.4.0 — \"per-tenant quotas, fail-closed. Two production users on this path.\"",
           "confidence": 0.98
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/tensorpage/pagekv/commits/main?since=2024-12-11",
+          "observed_at": "2024-12-11T08:55:00+00:00",
+          "evidence_span": "revert the speculative prefetch — it regressed p99 under load",
+          "payload": {
+            "repo": "tensorpage/pagekv",
+            "commits_30d": 37,
+            "files_touched": 12,
+            "net_lines": -640,
+            "topic": "reverted prefetch after regression",
+            "stars": 4460,
+            "role": "owner"
+          }
         },
         {
           "kind": "repo_activity",
