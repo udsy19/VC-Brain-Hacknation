@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from intelligence import flags
 from schema.events import Event, EventKind, FounderScore, GateDecision, GateOutcome, Source
 
 _TECHNICAL_CLAIM_TERMS = (
@@ -38,7 +39,7 @@ def decide(
         if event.company_id == company_id
         and event.observed_at <= as_of
         and event.kind != EventKind.INTEGRITY
-        and not event.integrity_flags
+        and not flags.is_impeached(event)
     ]
     has_code_source = any(
         (

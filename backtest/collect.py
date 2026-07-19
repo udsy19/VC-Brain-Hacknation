@@ -141,7 +141,31 @@ def load_cohort() -> dict:
 
     if not members:
         raise LookupError("backtest cohort is empty")
+    members = [{**m, "company_id": m.get("company_id") or _resolve_company_id(m)} for m in members]
     return {"threshold": _threshold(blob), "members": members, "policy": _policy(blob)}
+
+
+def _resolve_company_id(member: dict) -> str | None:
+    """Look the member's company up in the event store, by name.
+
+    The cohort file deliberately does NOT hardcode UUIDs: the ids are whatever the
+    store minted when scripts/seed.py loaded the cohort, and a stale literal here
+    would silently resolve to nothing — which is exactly the failure that let the
+    replay fall through to hand-authored numbers while still calling itself a replay.
+    Returns None when the cohort has not been seeded, and the caller reports that
+    member as not replayed rather than substituting a fixture.
+    """
+    name = member.get("company_name") or member.get("name")
+    if not name:
+        return None
+    try:
+        from memory import store
+
+        row = next((c for c in store.all_companies() if c.get("name") == name), None)
+    except Exception as exc:  # noqa: BLE001 - no store is "not replayed", never a fixture
+        log.info("collect: company lookup unavailable for %s (%s)", name, exc)
+        return None
+    return str(row["company_id"]) if row else None
 
 
 def _threshold(blob: dict) -> float:
@@ -160,10 +184,26 @@ def _policy(blob: dict) -> str | None:
     return raw.get("policy") if isinstance(raw, dict) else None
 
 
+def _member_names(m: dict) -> set[str]:
+    """Every name a cohort member answers to, lowercased.
+
+    The cohort records its founder as an object ({display_name, name_normalized})
+    so the seeder can create a real entity from it. Matching on `str(m["founder"])`
+    stringified that dict and matched nothing.
+    """
+    founder = m.get("founder")
+    names = [m.get("name"), m.get("company_name")]
+    if isinstance(founder, dict):
+        names += [founder.get("display_name"), founder.get("name_normalized")]
+    elif founder:
+        names.append(str(founder))
+    return {str(n).lower() for n in names if n}
+
+
 def _fixture_member(founder: str) -> dict | None:
     try:
         for m in load_cohort()["members"]:
-            if str(m.get("founder", "")).lower() == founder.lower():
+            if founder.lower() in _member_names(m):
                 return m
     except LookupError:
         return None

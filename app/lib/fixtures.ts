@@ -1302,42 +1302,44 @@ function traj(
   };
 }
 
+/**
+ * Offline placeholder for the calibration page.
+ *
+ * This is the ONLY fixture in the app that could be mistaken for a result, so it is
+ * written to be unmistakable. It previously asserted `fame_check_passed: true`,
+ * `hit_rate: 0.75` and "1,284 events replayed" — none of which any run had produced —
+ * and rendered those unqualified whenever the API was unreachable. The backtest is the
+ * artifact whose entire job is proving the system does not fool itself; a hardcoded
+ * pass on that page is the worst possible thing to be wrong.
+ *
+ * So: the gate reports NOT PASSED here, because nothing ran. A real result comes from
+ * GET /backtest, and the page marks its source.
+ */
 export const BACKTEST: Backtest = {
-  as_of: "2019-03-01T00:00:00Z",
+  as_of: "",
   truncation_note:
-    "All sources truncated by hand to 2019-03-01, before any of these founders were publicly known. Truncation dates recorded per source in backtest/sources.json.",
-  threshold: 65,
-  fame_check_passed: true,
+    "Placeholder shown because the replay is unavailable. No sources were truncated and no founder was scored — the figures below are shape, not measurement.",
+  threshold: 62,
+  fame_check_passed: false,
   fame_check_detail:
-    "H12 gate: 0 of 5 controls cleared the 65 threshold (highest control: 47.2). Controls are matched founders from the same era with comparable public footprints who did not break out. If controls had cleared, the score would be measuring visibility rather than capability and all feature work would have stopped.",
-  hit_rate: 0.75,
-  n_winners: 4,
-  n_controls: 5,
-  trajectories: [
-    traj("w1", "Winner A", "winner", 88, 41, "Series B, 2022"),
-    traj("w2", "Winner B", "winner", 79, 36, "Acquired, 2021"),
-    traj("w3", "Winner C", "winner", 74, 44, "Series A, 2021"),
-    traj("w4", "Winner D", "winner", 58, 39, "Series A, 2023 — MISSED, scored below threshold"),
-    traj("c1", "Control 1", "control", 47, 38, "No outcome"),
-    traj("c2", "Control 2", "control", 41, 35, "Shut down, 2021"),
-    traj("c3", "Control 3", "control", 44, 42, "No outcome"),
-    traj("c4", "Control 4", "control", 36, 33, "Acqui-hired, 2020"),
-    traj("c5", "Control 5", "control", 39, 40, "No outcome"),
-  ],
+    "Not evaluated. The H12 gate only means something when controls are replayed through the live scorer; with the API unreachable, nothing was replayed. This panel is showing layout, not a verdict.",
+  hit_rate: 0,
+  n_winners: 0,
+  n_controls: 0,
+  trajectories: [],
   correctly_deprioritized: {
-    name: "Control 2",
-    final_score: 41,
-    why: "Highly visible at as_of — a widely-shared launch post and a fast-growing follower count — and the screen scored it 41 anyway. The public footprint was announcement-shaped: no sustained authorship, no third party ever reproduced a claim, and every assertion traced back to the founder's own posts.",
-    outcome:
-      "Shut down 2021 without shipping the described product. A fame-weighted screen ranks this company in the top quartile at as_of. This one costs nothing to show and it is the most credible thing on the page.",
+    name: "—",
+    final_score: 0,
+    why: "The deprioritized-failure slide is populated from the replay. No replay, no failure to show.",
+    outcome: "Unavailable offline.",
   },
   lookahead_assertion: {
-    events_checked: 1_284,
+    events_checked: 0,
     violations: 0,
     detail:
-      "The rig raises on any event reaching the scorer with observed_at > as_of. 1,284 events replayed through the same code path as live — no special backtest mode — and 0 violations. The assertion is what makes the claim credible rather than asserted.",
+      "The assertion did not run. events_checked = 0 is the honest reading: a violations count of 0 with nothing checked proves nothing, and is not evidence of no lookahead.",
   },
 };
 
-/** Winner D scored 58 against a 65 threshold: 3 of 4 winners cleared. */
-export const MISSED_WINNER = "Winner D";
+/** Populated from the live replay; there is no offline stand-in for a real miss. */
+export const MISSED_WINNER = "";

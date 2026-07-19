@@ -15,8 +15,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getCompanies } from "@/lib/api";
-import type { CompanySummary } from "@/lib/types";
+import { getBacktest, getCompanies } from "@/lib/api";
+import type { Backtest, CompanySummary } from "@/lib/types";
 import HeatField from "@/components/HeatField";
 import NodeField, { type SchematicNode } from "@/components/NodeField";
 import { Poster, Registration, Stub } from "@/components/Poster";
@@ -69,14 +69,47 @@ function Schematic({
   return <NodeField nodes={nodes} {...rest} />;
 }
 
+/**
+ * §1.1 again, on the one number that must never be decorative. This read
+ * "0 of 1,284 replayed events" as a hardcoded string while no replay existed at
+ * all — a fabricated proof of the exact property the backtest exists to
+ * demonstrate. It now reports what `assert_no_lookahead` actually counted, and
+ * says so plainly when the replay has not run.
+ *
+ * `live` is load-bearing. The offline fixture carries its own events_checked, so
+ * rendering it unqualified would restate the fabricated count the moment the API
+ * is unreachable — reintroducing the bug through the back door.
+ */
+function lookaheadClaim(
+  backtest: Backtest | null,
+  loading: boolean,
+  live: boolean,
+): string {
+  if (loading) return "Loading…";
+  const a = backtest?.lookahead_assertion;
+  if (!a || !a.events_checked) return "Replay has not run — nothing checked";
+  if (!live) return "No live replay — showing no count rather than a seeded one";
+  return `${a.violations ?? 0} of ${a.events_checked.toLocaleString()} replayed events`;
+}
+
 export default function Pitch() {
   const [companies, setCompanies] = useState<CompanySummary[] | null>(null);
+  const [backtest, setBacktest] = useState<Backtest | null>(null);
+  const [backtestLive, setBacktestLive] = useState(false);
+  const [backtestLoading, setBacktestLoading] = useState(true);
 
   useEffect(() => {
     let live = true;
     (async () => {
       const r = await getCompanies();
       if (live) setCompanies(r.data);
+    })();
+    (async () => {
+      const r = await getBacktest();
+      if (!live) return;
+      setBacktest(r?.data ?? null);
+      setBacktestLive(r?.source === "live");
+      setBacktestLoading(false);
     })();
     return () => {
       live = false;
@@ -357,7 +390,10 @@ export default function Pitch() {
                   </Link>
                 }
               />
-              <Stub label="Lookahead violations" value="0 of 1,284 replayed events" />
+              <Stub
+                label="Lookahead violations"
+                value={lookaheadClaim(backtest, backtestLoading, backtestLive)}
+              />
               <Stub label="Status" value="Seeded demonstration records" />
             </div>
           </Reveal>

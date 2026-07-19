@@ -26,13 +26,23 @@ class LookaheadError(AssertionError):
     """Raised loudly. Never caught, never downgraded to a warning."""
 
 
-def assert_no_lookahead(events: list[Event], as_of: datetime) -> None:
+def assert_no_lookahead(events: list[Event], as_of: datetime) -> int:
+    """Raise if any event postdates as_of. Returns how many events were checked.
+
+    The return value is not decoration. `lookahead_checked: True` used to be a
+    literal in the report — a claim that the assertion had run, written by hand,
+    in the one artifact whose entire job is proving the system does not fool
+    itself. Callers now count what this function actually saw, so the report says
+    "checked N events" or says it did not run. A hardcoded True is worse than no
+    field at all.
+    """
     leaked = [e for e in events if e.observed_at > as_of]
     if leaked:
         raise LookaheadError(
             f"{len(leaked)} event(s) from the future reached the scorer at as_of={as_of}: "
             f"{[str(e.event_id) for e in leaked[:3]]}"
         )
+    return len(events)
 
 
 def _aware(v: Any) -> datetime:
@@ -66,13 +76,13 @@ def replay(company_id: Any, as_of: datetime) -> dict:
 
     # 1. ingest (read side): the as_of-scoped event set, checked before it goes anywhere.
     events = store.events(as_of=cutoff, company_id=cid)
-    assert_no_lookahead(events, cutoff)
+    events_checked = assert_no_lookahead(events, cutoff)
 
     # 2. score, per founder entity — assertion repeated on the exact list the scorer sees.
     scores = []
     for entity_id in founder_entity_ids(cid) if cid else []:
         entity_events = store.events(as_of=cutoff, entity_id=entity_id)
-        assert_no_lookahead(entity_events, cutoff)
+        events_checked += assert_no_lookahead(entity_events, cutoff)
         fs = score_mod.founder(entity_id, cutoff)
         scores.append(
             {
@@ -99,7 +109,10 @@ def replay(company_id: Any, as_of: datetime) -> dict:
         "screening": screening,
         "gate": gate,
         "memo": memo,
+        # Reported because it happened, not because it is expected to: the assertion
+        # above ran over exactly this many events and did not raise.
         "lookahead_checked": True,
+        "lookahead_events_checked": events_checked,
     }
 
 
@@ -144,51 +157,64 @@ def _gate(cid: UUID | None, cutoff: datetime) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _trajectory(member: dict, points: int = 12) -> list[dict]:
-    """Score at successive cutoffs up to the truncation date.
+def _trajectory(member: dict, points: int = 12) -> tuple[list[dict], dict]:
+    """Score at successive cutoffs up to the series bound. Returns (series, diagnostics).
 
     Every point is a real filter run at that cutoff — never an interpolation backwards
     from the final value, which would be lookahead wearing a chart's clothing.
+
+    There is deliberately NO fixture fallback. This function used to catch LookupError
+    and return the hand-authored trajectory from data/seed/backtest.json instead; every
+    cohort member had a null company_id, so every member took that path, score.founder()
+    was never called, and the report still described itself as a replay. A backtest that
+    silently substitutes authored numbers for a failed replay is not degraded — it is
+    false. When the replay cannot run, this returns an empty series and says why, and
+    the member is counted as not replayed.
     """
+    from api.routers.deps import founder_entity_ids
+    from memory import score as score_mod, store
+
     cut = _series_bound(member)
     cid = _as_uuid(member.get("company_id"))
+    diag = {"replayed": False, "events_checked": 0, "reason": None}
 
-    try:
-        from api.routers.deps import founder_entity_ids
-        from memory import score as score_mod, store
+    if cid is None:
+        diag["reason"] = "cohort member has no company_id in the store — run scripts/seed.py"
+        return [], diag
+    ents = founder_entity_ids(cid)
+    if not ents:
+        diag["reason"] = f"no founder entity resolves for company {cid}"
+        return [], diag
 
-        ents = founder_entity_ids(cid) if cid else []
-        if not ents:
-            raise LookupError("no resolved founder entity")
-        entity_id = ents[0]
-        events = store.events(as_of=cut, entity_id=entity_id)
-        if not events:
-            raise LookupError("no events before the truncation date")
+    entity_id = ents[0]
+    events = store.events(as_of=cut, entity_id=entity_id)
+    if not events:
+        diag["reason"] = f"no events on or before {cut.isoformat()}"
+        return [], diag
 
-        start = min(e.observed_at for e in events)
-        step = (cut - start or timedelta(days=1)) / max(points - 1, 1)
-        series = []
-        for i in range(points):
-            at = start + step * i
-            window = [e for e in events if e.observed_at <= at]
-            assert_no_lookahead(window, at)
-            fs = score_mod.founder(entity_id, at)
-            series.append(
-                {"as_of": at.isoformat(), "mu": fs.mu, "band": fs.band, "trend": fs.trend}
-            )
-        return series
-    except LookaheadError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - fall back to the hand-collected trajectory
-        log.info("calibration: replaying %s from fixture (%s)", member.get("founder"), exc)
+    start = min(e.observed_at for e in events)
+    step = (cut - start or timedelta(days=1)) / max(points - 1, 1)
+    series = []
+    checked = 0
+    for i in range(points):
+        at = start + step * i
+        window = [e for e in events if e.observed_at <= at]
+        checked += assert_no_lookahead(window, at)
+        fs = score_mod.founder(entity_id, at)
+        series.append(
+            {
+                "as_of": at.isoformat(),
+                "mu": fs.mu,
+                "band": fs.band,
+                "trend": fs.trend,
+                # How many events the filter actually consumed at this cutoff. Zero
+                # means the point IS the prior (mu=0.5), not a reading — see _peak.
+                "n_observations": len(fs.contributing_event_ids),
+            }
+        )
 
-    return [
-        # Normalize `founder_score` onto `mu` so downstream code reads one field
-        # regardless of which path produced the series.
-        {**p, "mu": p.get("mu", p.get("founder_score")), "as_of": _aware(p["as_of"]).isoformat()}
-        for p in member.get("trajectory", [])
-        if _aware(p["as_of"]) <= cut  # the fixture is truncated too, not trusted blindly
-    ]
+    diag.update({"replayed": True, "events_checked": checked, "entity_id": str(entity_id)})
+    return series, diag
 
 
 def _series_bound(member: dict) -> datetime:
@@ -202,34 +228,38 @@ def _series_bound(member: dict) -> datetime:
     """
     if member.get("breakout_at"):
         return _aware(member["breakout_at"])
-    points = member.get("trajectory") or []
-    if points:
-        return max(_aware(pt["as_of"]) for pt in points if pt.get("as_of"))
     return _truncation(member)
 
 
 def _truncation(member: dict) -> datetime:
-    """The hand-set pre-breakout source cutoff. The cohort calls this
-    `source_truncation_date`; earlier drafts called it `truncation_date`. Controls carry
-    neither — they are matched contemporaries, not hand-truncated sources — so their own
-    last observed point is the honest bound."""
-    for key in ("truncation_date", "source_truncation_date", "as_of"):
+    """The collection cutoff: the date past which no source was gathered for this member.
+
+    The cohort calls this `collection_cutoff` and sets it to the member's breakout date,
+    so every collected event predates the moment the founder became widely known.
+    Earlier drafts used `truncation_date` / `source_truncation_date`; both are still
+    accepted so a member written in the old shape does not silently lose its bound.
+    """
+    for key in ("collection_cutoff", "truncation_date", "source_truncation_date", "as_of"):
         if member.get(key):
             return _aware(member[key])
-    points = member.get("trajectory") or []
-    if points:
-        return max(_aware(pt["as_of"]) for pt in points if pt.get("as_of"))
-    raise KeyError("cohort member has no truncation date and no trajectory")
+    raise KeyError("cohort member has no collection cutoff")
+
+
+def _scored(series: list[dict]) -> list[dict]:
+    """Points where the filter actually consumed evidence.
+
+    The first cutoff of every series lands on the founder's earliest event, before any
+    observation has been derived from it, so the filter returns the untouched prior of
+    mu=0.5. That is the scorer saying "I know nothing", and it is not a score. Counting
+    it made every control peak at exactly 0.5 — a flat 0.5 for a founder whose real
+    replayed level is 0.22, and only 0.12 below the threshold the fame check turns on.
+    A prior must never be reported as a measurement.
+    """
+    return [p for p in series if p.get("n_observations")]
 
 
 def _peak(series: list[dict]) -> float | None:
-    # The live replay emits `mu`; hand-collected fixture points say `founder_score`.
-    values = [
-        v
-        for p in series
-        for v in (p.get("mu"), p.get("founder_score"))
-        if isinstance(v, (int, float))
-    ]
+    values = [p["mu"] for p in _scored(series) if isinstance(p.get("mu"), (int, float))]
     return max(values) if values else None
 
 
@@ -245,16 +275,23 @@ def run_calibration() -> dict:
     threshold = cohort["threshold"]
 
     results = []
+    events_checked = 0
     for m in cohort["members"]:
-        series = _trajectory(m)
+        series, diag = _trajectory(m)
+        events_checked += diag["events_checked"]
         peak = _peak(series)
         results.append(
             {
-                # The cohort names its entries `name`; earlier drafts used `founder`.
-                # Carrying only one dropped every label, so the calibration chart had
-                # no way to say who each line was.
-                "founder": m.get("founder") or m.get("name"),
-                "name": m.get("name") or m.get("founder"),
+                "replayed": diag["replayed"],
+                "not_replayed_reason": diag["reason"],
+                "lookahead_events_checked": diag["events_checked"],
+                "detected_at": _first_clearing(series, threshold),
+                # The cohort names its entries `name` and carries the founder as an
+                # object so the seeder can mint a real entity from it. Carrying only
+                # one of the two dropped every label, so the calibration chart had no
+                # way to say who each line was.
+                "founder": _founder_name(m),
+                "name": m.get("name") or _founder_name(m),
                 "id": m.get("id"),
                 "sector": m.get("sector"),
                 "outcome": m.get("outcome")
@@ -275,14 +312,20 @@ def run_calibration() -> dict:
     controls = [r for r in results if r["label"] == "control"]
     failures = [r for r in results if r["label"] == "failure"]
 
-    controls_clearing = [r for r in controls if r["cleared_threshold"]]
-    # Vacuous truth is not a pass: with no controls the check simply did not run.
-    fame_check_evaluated = bool(controls)
+    # Only replayed members are evidence. A member whose replay did not run has no
+    # score, and counting it as "did not clear" would turn a broken rig into a passing
+    # fame check — the exact inversion this gate exists to catch.
+    replayed_winners = [r for r in winners if r["replayed"]]
+    replayed_controls = [r for r in controls if r["replayed"]]
+
+    controls_clearing = [r for r in replayed_controls if r["cleared_threshold"]]
+    # Vacuous truth is not a pass: with no REPLAYED controls the check did not run.
+    fame_check_evaluated = bool(replayed_controls)
     fame_check_passed = fame_check_evaluated and not controls_clearing
 
-    hits = [r for r in winners if r["cleared_threshold"]]
+    hits = [r for r in replayed_winners if r["cleared_threshold"]]
     deprioritized = next(
-        (r for r in failures if not r["cleared_threshold"]),
+        (r for r in failures if r["replayed"] and not r["cleared_threshold"]),
         next((r for r in failures), None),
     )
 
@@ -291,13 +334,45 @@ def run_calibration() -> dict:
         "results": results,
         "winners": winners,
         "controls": controls,
-        "hit_rate": (len(hits) / len(winners)) if winners else None,
+        "hit_rate": (len(hits) / len(replayed_winners)) if replayed_winners else None,
         "hits": len(hits),
-        "winners_evaluated": len(winners),
-        "controls_evaluated": len(controls),
+        "winners_evaluated": len(replayed_winners),
+        "controls_evaluated": len(replayed_controls),
+        "members_replayed": sum(1 for r in results if r["replayed"]),
+        "members_total": len(results),
+        "not_replayed": [
+            {"name": r["name"], "reason": r["not_replayed_reason"]}
+            for r in results
+            if not r["replayed"]
+        ],
         "fame_check_passed": fame_check_passed,
         "fame_check_evaluated": fame_check_evaluated,
         "controls_clearing_threshold": [r["founder"] for r in controls_clearing],
         "correctly_deprioritized_failure": deprioritized,
-        "lookahead_checked": True,
+        # Both of these are measured, never asserted. `lookahead_checked` is True only
+        # because assert_no_lookahead ran over `events_checked` events and did not
+        # raise; with nothing replayed, nothing was checked and it reports False.
+        "lookahead_checked": events_checked > 0,
+        "events_checked": events_checked,
     }
+
+
+def _founder_name(member: dict) -> str | None:
+    founder = member.get("founder")
+    if isinstance(founder, dict):
+        return founder.get("display_name") or founder.get("name_normalized")
+    return str(founder) if founder else member.get("name")
+
+
+def _first_clearing(series: list[dict], threshold: float) -> str | None:
+    """The earliest replayed as_of at which the founder axis cleared the threshold.
+
+    This is the "we would have found them on this date" claim, and it is read off the
+    replayed series rather than recorded in the fixture. The cohort file used to carry
+    a `detected_at` per winner; a detection date that the replay did not produce is a
+    prediction written after the fact.
+    """
+    for point in _scored(series):
+        if isinstance(point.get("mu"), (int, float)) and point["mu"] >= threshold:
+            return point["as_of"]
+    return None

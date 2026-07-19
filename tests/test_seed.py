@@ -278,28 +278,65 @@ def test_memos_flag_gaps_and_cite_events() -> None:
         assert memo["recommendation"]
 
 
-def test_backtest_controls_stay_below_threshold() -> None:
-    """H12 hard gate: if a control clears, the score measures fame, not trajectory."""
+def _backtest_members() -> list[dict]:
     bt = json.loads((SEED_DIR / "backtest.json").read_text(encoding="utf-8"))
-    threshold = bt["threshold"]["value"]
+    return [*bt["winners"], *bt["controls"], bt["correctly_deprioritized_failure"]]
 
-    for control in bt["controls"]:
-        scores = [p["founder_score"] for p in control["trajectory"]]
-        assert max(scores) < threshold, f"{control['id']} clears the threshold"
-        assert max(scores) - min(scores) < 0.1, f"{control['id']} is not flat"
-        assert control["cleared_threshold"] is False
 
-    assert bt["gate_h12"]["status"] == "PASS"
-    assert bt["gate_h12"]["max_control_score_observed"] < threshold
+def test_the_backtest_cohort_states_no_result_it_should_have_to_earn() -> None:
+    """The cohort file carries EVIDENCE. Every result is computed by the replay.
 
-    detected = [w for w in bt["winners"] if w["detected"]]
-    assert len(detected) >= 3
-    for winner in detected:
-        scores = [p["founder_score"] for p in winner["trajectory"]]
-        assert scores[-1] > threshold
-        assert scores[-1] - scores[0] > 0.3, "winners must rise, not sit high"
+    This test replaces one that asserted `gate_h12.status == "PASS"` and compared
+    hand-written `founder_score` points against the threshold — verifying that the
+    typed numbers agreed with each other, in the artifact whose entire purpose is
+    proving the system does not fool itself. The H12 gate is now checked against
+    replayed scores in tests/test_backtest.py, where it can actually fail.
+    """
+    banned = {
+        "trajectory",
+        "founder_score",
+        "peak_score",
+        "our_score_at_as_of",
+        "cleared_threshold",
+        "detected",
+        "detected_at",
+        "lead_time_days",
+        "hit_rate",
+    }
+    bt = json.loads((SEED_DIR / "backtest.json").read_text(encoding="utf-8"))
+    assert not banned & set(bt), "the cohort file states a result it should have to earn"
+    assert "status" not in bt["gate_h12"], "the H12 verdict is replayed, never recorded"
 
-    assert bt["correctly_deprioritized_failure"]["cleared_threshold"] is False
+    for member in _backtest_members():
+        leaked = banned & set(member)
+        assert not leaked, f"{member['id']} states {sorted(leaked)} instead of replaying it"
+        for event in member["events"]:
+            keys = set(event["payload"])
+            assert not keys & {"founder_score", "score", "mu", "band", "trend", "rank"}
+
+
+def test_the_backtest_cohort_can_actually_be_replayed() -> None:
+    """Identity + events, or the member silently falls out of the replay.
+
+    Every member of the shipped cohort had a null company_id and no events, so the
+    replay resolved nothing and reported hand-authored trajectories instead.
+    """
+    for member in _backtest_members():
+        assert member["company_name"], f"{member['id']} has no company to resolve"
+        assert member["founder"]["name_normalized"], f"{member['id']} has no founder entity"
+        assert member["events"], f"{member['id']} has nothing to replay"
+        assert member["evidence_provenance"] in {
+            "reconstructed-from-public-record",
+            "synthetic",
+        }, f"{member['id']} does not say where its evidence came from"
+
+        cutoff = datetime.fromisoformat(member["collection_cutoff"])
+        for event in member["events"]:
+            observed = datetime.fromisoformat(event["observed_at"])
+            assert observed <= cutoff, (
+                f"{member['id']} collected {observed} after its {cutoff} cutoff — "
+                "the source truncation is the claim, so it is checked here too"
+            )
 
 
 def test_no_precomputed_scores_leak_into_the_event_fixtures() -> None:

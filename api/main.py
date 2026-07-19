@@ -86,26 +86,51 @@ def list_companies(as_of: datetime | None = None) -> list[dict]:
         # A serial founder's previous company is history, not an opportunity. Its
         # events still feed the founder score — that persistence is the whole point
         # of the archetype — but it does not belong in a list of things to invest in.
-        rows = [r for r in rows if r.get("name") not in _prior_company_names()]
+        excluded = _prior_company_names() | _backtest_cohort_names()
+        rows = [r for r in rows if r.get("name") not in excluded]
         ranked = sorted((_ranked_row(r, cutoff) for r in rows), key=_rank_key)
         for i, row in enumerate(ranked, 1):
             row["rank"] = i
         return ranked
 
-    return degrade(live, lambda: seed("companies")["companies"])
+    return degrade(live, lambda: [_seeded_row(e, cutoff) for e in seed("companies")["companies"]])
 
 
-def _ranked_row(row: dict, as_of: datetime) -> dict:
+def _seeded_row(entry: dict, as_of: datetime) -> dict:
+    """A ranked-list row served from the fixture because the store was unreachable.
+
+    The degraded list path used to return the authored fixture entries VERBATIM: no
+    gate_source, no `live` flags, no axis normalization. So the one path where every
+    number is definitionally hand-authored was also the only path that said nothing
+    about it — a store outage silently turned the whole list into undisclosed fixtures.
+    Extra keys are additive, and the raw fixture keys are preserved because /query
+    filters on them.
+    """
+    axes = {k: _rescale_axis(v) for k, v in (entry.get("axes") or {}).items()}
+    return {
+        **entry,
+        "axes": axes,
+        "gate": entry.get("gate"),
+        "gate_source": "seeded_fixture" if entry.get("gate") else "unavailable",
+        "gate_rationale": None,
+        "as_of": as_of.isoformat(),
+        "degraded": True,
+    }
+
+
+def _ranked_row(row: dict, as_of: datetime, *, compute: bool = False) -> dict:
     """One row in the ranked list, in the three-axes shape the client reads.
 
-    The founder axis is computed live by the filter. Market and idea-vs-market come
-    from the seeded screen: assessing them per request costs an LLM call per company,
-    which is not a page load. The `live` flag on each axis says which is which rather
-    than presenting seeded numbers as freshly computed.
+    The founder axis is computed live by the filter every request. Market and
+    idea-vs-market each cost an LLM call, so the list serves them only when a screening
+    has already been computed for this company (see deps.screening); otherwise it says
+    so. Every axis carries `live`: True means these numbers were computed from the event
+    log, False means they were read from a hand-authored seed. An axis with no computed
+    receipts carries an EMPTY evidence list and a `reason` — never a padded placeholder.
 
     Nothing here averages the axes — ranking happens in _rank_key on a stated policy.
     """
-    from api.routers.deps import as_uuid, fixture_key, founder_entity_ids
+    from api.routers.deps import as_uuid, fixture_key, founder_entity_ids, screening
 
     cid = as_uuid(row.get("company_id"))
     slug = fixture_key(str(cid)) if cid else None
@@ -117,6 +142,15 @@ def _ranked_row(row: dict, as_of: datetime) -> dict:
     archetype_no = row.get("archetype") or seeded.get("archetype")
     axes = {k: _rescale_axis(v) for k, v in (seeded.get("axes") or {}).items()}
 
+    # A computed screening replaces the seeded market / idea-vs-market axes wholesale,
+    # receipts included. This is the only path on which those two axes are ever `live`.
+    screen_result = screening(cid, as_of, compute=compute) if cid else None
+    if screen_result is not None:
+        for name in ("market", "idea_vs_market"):
+            axis = getattr(screen_result, name, None)
+            if axis is not None:
+                axes[name] = _axis_from_screen(axis)
+
     try:
         from memory import score as score_mod
 
@@ -125,26 +159,20 @@ def _ranked_row(row: dict, as_of: datetime) -> dict:
             fs = score_mod.founder(ents[0], as_of)
             axes["founder"] = {
                 "score": round(fs.mu * 100, 1),
-                # Per-day momentum is ~1e-4 and invisible at that scale. Expressed
-                # per 30 days in score units, which is what the arrow actually means.
-                "trend": round(fs.trend * 100 * 30, 2),
+                # Expressed per 30 days in score units, which is what the arrow means.
+                "trend": round(fs.trend * 100 * _TREND_YEARS_PER_30_DAYS, 2),
+                "trend_unit": TREND_UNIT_SCORE_PER_30D,
                 "band": round(fs.band * 100, 1),
                 # A band is an interval, not a confidence — invert it so a wide band
                 # reads as low confidence rather than high.
                 "confidence": round(max(0.0, 1.0 - min(1.0, fs.band * 2)), 2),
                 "evidence_event_ids": [str(i) for i in fs.contributing_event_ids],
+                "live": True,
             }
     except Exception:  # noqa: BLE001 - an unscored company still belongs in the list
         pass
 
-    gate = seeded.get("gate")
-    if not gate:
-        try:
-            from intelligence import gate as gate_mod
-
-            gate = gate_mod.evaluate(cid, as_of).outcome.value if cid else "proceed"
-        except Exception:  # noqa: BLE001 - a gate we cannot compute is not a crash
-            gate = "proceed"
+    gate, gate_source, gate_rationale = _gate_for(cid, as_of, seeded)
 
     label = ARCHETYPE_LABELS.get(archetype_no, "")
     return {
@@ -157,7 +185,11 @@ def _ranked_row(row: dict, as_of: datetime) -> dict:
         "geo": seeded.get("geo") or "North America",
         # The client renders this as a string, not a number: "Type 2 · Cold Start".
         "archetype": f"Type {archetype_no} · {label}" if archetype_no else "",
-        "gate": str(gate),
+        "gate": gate,
+        # Which of the two produced `gate`. A fixture standing in for the engine is a
+        # thing a judge is entitled to see, so it is stated rather than silently served.
+        "gate_source": gate_source,
+        "gate_rationale": gate_rationale,
         "axes": axes,
         "flag_count": len(seeded.get("flags") or []),
         "as_of": as_of.isoformat(),
@@ -171,17 +203,105 @@ def _ranked_row(row: dict, as_of: datetime) -> dict:
     }
 
 
+def _gate_for(cid, as_of: datetime, seeded: dict) -> tuple[str | None, str, str | None]:
+    """The gate, and where it came from. THE ENGINE WINS.
+
+    The engine is the thing that actually decides; a hand-authored `gate` in the seed
+    is a placeholder for it. Serving the fixture in preference to the engine — which is
+    what this did — made the API disagree with its own decision engine on 9 of 13
+    companies while presenting the result as a decision. When the engine genuinely
+    cannot answer we fall back, but `gate_source` names the fallback in the payload so
+    an authored verdict can never again be read as a computed one.
+    """
+    if cid is not None:
+        try:
+            from intelligence import gate as gate_mod
+
+            decision = gate_mod.evaluate(cid, as_of)
+            return decision.outcome.value, "computed", decision.rationale
+        except Exception:  # noqa: BLE001 - a gate we cannot compute is not a crash
+            pass
+
+    if seeded.get("gate"):
+        return str(seeded["gate"]), "seeded_fixture", None
+    # No engine answer and nothing authored. Previously this defaulted to "proceed" —
+    # inventing the most permissive verdict in the system out of an absence of data.
+    return None, "unavailable", "the decision engine could not be run for this company"
+
+
+def _axis_from_screen(axis) -> dict:
+    """A computed axis from intelligence.screen. Receipts are real event ids.
+
+    Two things this deliberately does NOT do:
+
+    `band` stays null. The client documents band as "± uncertainty in SCORE UNITS", and
+    the screen does not produce one — deriving it from confidence would put a fabricated
+    interval on the chart in the same units as the founder axis's real, filter-computed
+    band, which is the authored-served-as-computed failure this whole change is about.
+    Null renders as absence, which is the true answer.
+
+    `trend` is NOT rescaled by 100. The screen's trend is an LLM-assigned DIRECTION in
+    -1..1, not a rate; multiplying it by 100 produced a market trend of 100.0 on a 0..100
+    axis, i.e. "this score moves 100 points in 30 days" — the same impossible-magnitude
+    error as the founder trend's per-day/per-year mixup. The units genuinely differ per
+    axis, so each axis states its own.
+    """
+    ids = [str(i) for i in (axis.evidence_event_ids or []) if str(i).strip()]
+    return {
+        "score": round(axis.score * 100, 1),
+        "trend": round(axis.trend, 3),
+        "trend_unit": TREND_UNIT_DIRECTION,
+        "band": None,
+        "confidence": round(axis.confidence, 2),
+        "evidence_event_ids": ids,
+        "live": True,
+        **({} if ids else {"reason": "the screen returned no citable events for this axis"}),
+    }
+
+
 def _rescale_axis(axis: dict) -> dict:
-    """Seeded axes are authored 0..1; the client's Axis is 0..100 in score units."""
+    """Seeded axes are authored 0..1; the client's Axis is 0..100 in score units.
+
+    `live: False` — these numbers were authored, not computed this request.
+
+    Receipts are whatever the fixture actually names, and NOTHING otherwise. This used
+    to pad to `evidence_count` with empty strings, which rendered as that many clickable
+    receipts that drilled into nothing on every company for two of the three axes. An
+    axis that admits it has no receipts is worth more than a trace that dead-ends.
+    """
+    ids = [str(i) for i in (axis.get("evidence_event_ids") or []) if str(i).strip()]
     return {
         "score": round((axis.get("score") or 0.0) * 100, 1),
         "trend": round((axis.get("trend") or 0.0) * 100, 2),
         "band": round((axis.get("band") or 0.0) * 100, 1),
         "confidence": axis.get("confidence") or 0.0,
-        "evidence_event_ids": axis.get("evidence_event_ids")
-        or [""] * int(axis.get("evidence_count") or 0),
+        "evidence_event_ids": ids,
+        "live": False,
+        **({} if ids else {"reason": "seeded axis — no screening computed for this axis yet"}),
     }
 
+
+# THE UNIT OF `trend`.
+#
+# memory.score runs its Kalman filter on dt in YEARS (_dt_years divides by 86400 then
+# by 365.25, and _F is [[1, dt_years], [0, 1]]), so the velocity state — FounderScore
+# .trend — is in score-units PER YEAR. This converts it to per-30-days, the horizon the
+# UI's arrow claims to show.
+#
+# This was previously a bare `* 30`, which treated the rate as per-DAY and so displayed
+# every trend 365.25x too large: Tensorpage rendered a 30-day momentum of 568.0 on a
+# 0..100 axis, where the real figure is 1.56. Any number over ~100 here is definitionally
+# impossible, which is how the unit error stayed visible for so long without being read
+# as one.
+_DAYS_PER_YEAR = 365.25
+_TREND_YEARS_PER_30_DAYS = 30.0 / _DAYS_PER_YEAR
+
+# `trend` does not mean the same thing on every axis, so every axis says which it is.
+# The founder axis is a real rate from the Kalman filter; the screen axes are an LLM's
+# directional call. Presenting both as one unlabelled number invites exactly the
+# comparison neither supports.
+TREND_UNIT_SCORE_PER_30D = "score_points_per_30d"
+TREND_UNIT_DIRECTION = "direction_-1_to_1"
 
 ARCHETYPE_LABELS = {
     1: "Visible Builder",
@@ -203,6 +323,12 @@ def _prior_company_names() -> set[str]:
     from api.routers.deps import prior_company_names
 
     return prior_company_names()
+
+
+def _backtest_cohort_names() -> frozenset[str]:
+    from api.routers.deps import backtest_cohort_names
+
+    return backtest_cohort_names()
 
 
 def _fixture_row(slug: str | None) -> dict | None:

@@ -98,7 +98,7 @@ def test_local_models_have_locked_decisions_and_require_exact_three_roles() -> N
 def test_deliberation_runs_three_roles_then_chair_with_frozen_untrusted_inputs(monkeypatch) -> None:
     included = _event("included marker")
     future = _event("future marker", observed_at=T0 + timedelta(seconds=1))
-    flagged = _event("flagged marker", integrity_flags=["review_required"])
+    flagged = _event("flagged marker", integrity_flags=["injection_stripped"])
     foreign = _event("foreign marker", company_id=OTHER_COMPANY_ID)
     calls: list[tuple[str, dict]] = []
 

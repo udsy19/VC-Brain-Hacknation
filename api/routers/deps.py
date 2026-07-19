@@ -99,6 +99,30 @@ def prior_company_names() -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
+def backtest_cohort_names() -> frozenset[str]:
+    """Companies that exist only to be REPLAYED, never to be invested in.
+
+    The cohort became real entities with real events so the backtest could actually
+    score them — which is what makes it a replay rather than a retelling. The side
+    effect was that Docker, Supabase, Hugging Face and Vercel took ranks 1-4 of the
+    investable pipeline: companies that broke out a decade ago, offered as deals to
+    write a cheque into. Their events still feed the replay; they are not
+    opportunities. Same reasoning as a serial founder's prior company.
+    """
+    blob = seed_or("backtest", {})
+    out: set[str] = set()
+    for key in ("cohort", "winners", "controls", "failures"):
+        for m in blob.get(key) or []:
+            for field in ("company_name", "name", "founder"):
+                if isinstance(m.get(field), str):
+                    out.add(m[field])
+    failure = blob.get("correctly_deprioritized_failure")
+    if isinstance(failure, dict):
+        out |= {failure[f] for f in ("company_name", "name") if isinstance(failure.get(f), str)}
+    return frozenset(out)
+
+
+@lru_cache(maxsize=1)
 def _slug_by_name() -> dict[str, str]:
     """company_name -> fixture slug, read from the archetype fixtures themselves."""
     out: dict[str, str] = {}
@@ -108,6 +132,49 @@ def _slug_by_name() -> dict[str, str]:
             for prior in profile.get("prior_companies", []):
                 out[prior["name"]] = prior["company_id"]
     return out
+
+
+# Computed three-axis screenings, memoized per (company, as_of hour).
+#
+# market and idea_vs_market each cost an LLM call (~7s per company measured), so the
+# ranked list must NEVER compute them inline — 13 companies is a 95s page load. The
+# list reads whatever a detail view already computed and otherwise honestly reports no
+# receipts; the detail view pays the cost once, for one company, and warms this.
+_SCREENING: dict[tuple[str, str], Any] = {}
+
+
+def _screening_bucket(as_of: datetime) -> str:
+    """as_of defaults to now(), so an exact key would never hit. Bucketed to the hour:
+    coarse enough that list-after-detail shares an entry, fine enough that a deliberate
+    historical as_of query does not silently read a screening from a different era."""
+    return as_of.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+def screening(company_id: UUID, as_of: datetime, *, compute: bool = False) -> Any | None:
+    """The computed screening for a company, or None when we do not have one.
+
+    None is a real answer and callers must render it as "no receipts computed", never
+    as zero and never as a padded placeholder list.
+    """
+    key = (str(company_id), _screening_bucket(as_of))
+    if key in _SCREENING:
+        return _SCREENING[key]
+    if not compute:
+        return None
+    try:
+        from intelligence import screen
+
+        result = screen.three_axis(company_id, as_of)
+    except Exception as exc:  # noqa: BLE001 - an unscreened company still renders
+        log.info("screening unavailable (%s): %s", type(exc).__name__, exc)
+        return None
+    _SCREENING[key] = result
+    return result
+
+
+def reset_screening_cache() -> None:
+    """Test/demo-reset hook, mirroring reset_dissent_locks."""
+    _SCREENING.clear()
 
 
 def degrade(live: Callable[[], T], fallback: Callable[[], U]) -> T | U:

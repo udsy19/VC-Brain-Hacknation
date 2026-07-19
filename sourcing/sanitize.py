@@ -15,6 +15,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from schema.events import Event, EventKind, Source, utcnow
@@ -159,6 +160,91 @@ def sanitize(
     clean, found = _strip_stuffing(clean, ctx)
     events.extend(found)
     return _collapse(clean), events
+
+
+def sanitize_tree(value: Any, **ctx: Any) -> tuple[Any, list[Event]]:
+    """Sanitize every string inside a nested structure, not just a document body.
+
+    `raw.content` was the only thing the funnel cleaned, but it is not the only thing
+    that reaches a prompt. `meta["evidence_span"]` is what every scanner puts the
+    interesting text in, and it is what the memo cites — so an attacker-controlled HN
+    title or a planted Tavily snippet had a clean path to a model. Same funnel, every
+    channel: that is the only version of Invariant #4 that holds.
+    """
+    if isinstance(value, str):
+        return sanitize(value, **ctx)
+    if isinstance(value, dict):
+        clean_map: dict = {}
+        events: list[Event] = []
+        for key, item in value.items():
+            clean_map[key], found = sanitize_tree(item, **ctx)
+            events.extend(found)
+        return clean_map, events
+    if isinstance(value, (list, tuple)):
+        clean_seq: list = []
+        events = []
+        for item in value:
+            clean_item, found = sanitize_tree(item, **ctx)
+            clean_seq.append(clean_item)
+            events.extend(found)
+        return type(value)(clean_seq) if isinstance(value, tuple) else clean_seq, events
+    return value, []
+
+
+# Payload/meta keys the pipeline parses as control data rather than reading as text.
+# Sanitizing these would corrupt a timestamp or a flag name without protecting anything.
+NON_TEXT_KEYS = frozenset(
+    {
+        "observed_at",
+        "date_floor",
+        "confidence",
+        "entity_id",
+        "company_id",
+        "integrity_flags",
+        "kind",
+        "source",
+        "source_url",
+        "event_id",
+    }
+)
+
+
+def sanitize_event(event: Event) -> tuple[Event, list[Event]]:
+    """Sanitize a fully-formed Event's text channels. Returns (clean_event, integrity).
+
+    For producers that build Events directly instead of going through `bus.ingest` —
+    scripts/seed.py is the one that mattered, because it wrote the adversarial
+    fixture's slide-7 injection into the production store with integrity_flags=[].
+    """
+    ctx = {
+        "source_url": event.source_url,
+        "source": event.source,
+        "observed_at": event.observed_at,
+        "entity_id": event.entity_id,
+        "company_id": event.company_id,
+    }
+    events: list[Event] = []
+
+    span = event.evidence_span
+    if span:
+        span, found = sanitize(span, **ctx)
+        events.extend(found)
+
+    payload = dict(event.payload)
+    for key, value in event.payload.items():
+        if key in NON_TEXT_KEYS:
+            continue
+        payload[key], found = sanitize_tree(value, **ctx)
+        events.extend(found)
+
+    flags = list(event.integrity_flags)
+    if events and STRIPPED_FLAG not in flags:
+        flags.append(STRIPPED_FLAG)
+
+    clean = event.model_copy(
+        update={"evidence_span": span, "payload": payload, "integrity_flags": flags}
+    )
+    return clean, events
 
 
 def _apply(rule: Rule, text: str, ctx: dict) -> tuple[str, list[Event]]:

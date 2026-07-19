@@ -47,6 +47,49 @@ KIND_NOISE = {
     EventKind.PROOF_BEHAVIOR: 0.2,
 }
 
+# --- Proof Protocol calibration -------------------------------------------------
+# Spec 2c: a Proof Protocol result is a "high-weight, low-noise" observation, but its
+# "confidence intervals stay wide and are displayed". Those two clauses pull in
+# opposite directions and the multipliers above only honoured the first: the source
+# penalty (0.15) and the kind noise (0.2) COMPOUND to an effective 0.03, roughly 30x
+# less noise than any other observation. Two graded proof events then moved a
+# cold-start founder with no public footprint to mu 0.944 with a band of 0.036 -- a
+# higher score AND a tighter interval than a founder with 18 months of shipped
+# artifacts. That inverts the requirement it was meant to implement.
+#
+# The corrective is not to make proof weak. It stays the strongest single observation
+# type. It is to bound what a single 60-90 minute exercise can ever establish:
+#
+#   PROOF_NOISE_FLOOR  A proof result samples behaviour under one contrived task. That
+#       sampling error does not shrink no matter how clean the submission is, so proof
+#       observations carry an irreducible noise floor. Because the posterior level
+#       variance after a diffuse-prior update is approximately r, this floor is what
+#       keeps the band wide and displayed rather than a post-hoc clamp on the output.
+#
+#   PROOF_REPEAT_EXPONENT  Each grading of a challenge appends a fresh (artifact,
+#       behaviour) pair under a new uuid5, so re-running the demo beat used to raise
+#       the score without bound. Successive proof results for one entity are near-
+#       duplicate measurements of the same latent trait, not independent draws, so the
+#       k-th one is down-weighted by k**PROOF_REPEAT_EXPONENT. With exponent 2 the
+#       total information from proof converges (sum 1/k**2 = pi**2/6), which bounds the
+#       band from below at sqrt(6/pi**2) ~= 0.78 of the single-proof band no matter how
+#       many times the exercise is repeated. An accumulated real track record has no
+#       such ceiling, so it can always out-certain proof given enough milestones.
+#
+# The floor sits just below the noise of the strongest possible non-proof observation
+# -- a GITHUB or VALIDATOR green flag at perfect self-consistency, r = r0 * 0.6 = 0.048
+# -- so proof remains the strongest single observation type, and remains so flatly,
+# immune to the source and consistency penalties that inflate everything else. It is
+# still a measurement rather than a revelation, which is what the floor encodes.
+#
+# Note that mu is only weakly sensitive to this constant (0.846 -> 0.785 as the floor
+# sweeps 0.05 -> 0.14): against a diffuse cold-start prior any informative reading pulls
+# the level to roughly the observed value, which is correct Bayesian behaviour. It is
+# the BAND, not the level, that must carry the caveat -- exactly what spec 2c asks for.
+PROOF_NOISE_FLOOR = 0.045
+PROOF_REPEAT_EXPONENT = 2.0
+_PROOF_KINDS = frozenset({EventKind.PROOF_ARTIFACT, EventKind.PROOF_BEHAVIOR})
+
 MU0 = 0.5
 R0 = 0.08
 P0 = (0.25, 0.25)  # public compatibility constants for calibration diagnostics
@@ -249,13 +292,39 @@ def _observation_from_event(event: Event, entity_id: UUID) -> SchemaObservation 
     )
 
 
+def _apply_proof_calibration(
+    observations_for_entity: list[SchemaObservation], proof_event_ids: set[UUID]
+) -> list[SchemaObservation]:
+    """Floor proof noise and give repeated proof results diminishing returns.
+
+    Both adjustments land on ``source_penalty`` rather than on the filter, so the
+    resulting ``r`` stays derivable from the stored observation and the score remains
+    auditable end to end. See the PROOF_NOISE_FLOOR block above for the reasoning.
+    """
+    r0 = _params()[1]
+    calibrated: list[SchemaObservation] = []
+    seen = 0
+    for observation in observations_for_entity:
+        if not proof_event_ids.intersection(observation.event_ids):
+            calibrated.append(observation)
+            continue
+        seen += 1
+        floor_penalty = PROOF_NOISE_FLOOR * observation.self_consistency / r0
+        penalty = max(observation.source_penalty, floor_penalty) * seen**PROOF_REPEAT_EXPONENT
+        calibrated.append(observation.model_copy(update={"source_penalty": penalty}))
+    return calibrated
+
+
 def build_observations(entity_id: UUID, as_of: datetime) -> list[SchemaObservation]:
     contradicted_events = queries.contradicted_event_ids(entity_id, as_of)
     contradicted_claims = contradicted_claim_ids(as_of)
     observations_for_entity: list[SchemaObservation] = []
+    proof_event_ids: set[UUID] = set()
     for event in store.get_store().events(entity_id=entity_id, as_of=as_of):
         if event.kind not in _OBSERVATION_KINDS:
             continue
+        if event.kind in _PROOF_KINDS:
+            proof_event_ids.add(event.event_id)
         if (
             event.event_id in contradicted_events
             or _claim_refs(event.payload) & contradicted_claims
@@ -289,7 +358,7 @@ def build_observations(entity_id: UUID, as_of: datetime) -> list[SchemaObservati
                 )
                 continue
         deduplicated.append(observation)
-    return deduplicated
+    return _apply_proof_calibration(deduplicated, proof_event_ids)
 
 
 def observations(entity_id: UUID, as_of: datetime) -> ObservationSet:
@@ -312,31 +381,55 @@ def _noise_for_schema(observation: SchemaObservation) -> float:
     return max(_params()[1] / observation.self_consistency * observation.source_penalty, 1e-6)
 
 
-def _F(dt_years: float) -> np.ndarray:
-    return np.array([[1.0, dt_years], [0.0, 1.0]])
-
-
-# Silence is not evidence. A trend measured from past readings must not be
-# extrapolated indefinitely: momentum decays with a 90-day half-life, which bounds
+# Momentum is not permanent. A trend measured from past readings must not be
+# extrapolated indefinitely: velocity decays with MOMENTUM_HALFLIFE_DAYS, which bounds
 # total drift to v0 / DECAY_RATE, and uncertainty never exceeds the no-evidence prior.
-MOMENTUM_HALFLIFE_DAYS = 90.0
+#
+# This decay applies to EVERY propagation, not only to trailing silence. Applying it
+# only after the last observation (as this filter previously did) left the between-
+# observation transition as the undamped [[1, dt], [0, 1]], and that is what made the
+# band WIDEN as evidence accumulated. Under the undamped transition the propagated
+# level variance is P00 + 2*dt*P01 + dt**2 * P11 + Q00; measured on Tensorpage's real
+# 11-observation history the dt**2 * P11 term contributed 1e-3 to 7e-3 per step while
+# Q00 contributed only 1e-5 to 5e-5. Process noise was NOT the cause. The cause was
+# that the level inherits the full velocity variance scaled by dt**2, so the band
+# tracked observation SPACING rather than observation COUNT: it fell while readings
+# were monthly and rose the moment the cadence slipped to bi-monthly.
+#
+# Damping the velocity bounds the velocity-to-level coupling at 1/DECAY_RATE instead
+# of letting it grow linearly in dt, so a longer gap can no longer dominate the update.
+# The band then falls monotonically with every observation on real, irregularly spaced
+# histories. The half-life is 180 days rather than 90 because 90 damps so hard that the
+# level under-tracks its own readings (Tensorpage settled at mu 0.607 against readings
+# of 0.672); at 180 days the level tracks the data (0.668) and the trend still decays
+# correctly as a series plateaus.
+MOMENTUM_HALFLIFE_DAYS = 180.0
 _DECAY_RATE = np.log(2.0) / (MOMENTUM_HALFLIFE_DAYS / _DAYS_PER_YEAR)
 
 
-def _propagate_through_silence(
+def _F(dt_years: float) -> np.ndarray:
+    """Transition for a local-linear-trend level whose velocity decays exponentially.
+
+    ``dt_years`` is in YEARS, so the velocity component of the state -- reported as
+    ``FounderScore.trend`` -- is in capability units per YEAR. See ``trend_per_days``.
+    """
+    dt = max(float(dt_years), 0.0)
+    decay = float(np.exp(-_DECAY_RATE * dt))
+    return np.array([[1.0, (1.0 - decay) / _DECAY_RATE], [0.0, decay]])
+
+
+def _propagate(
     x: np.ndarray, covariance: np.ndarray, dt_years: float, q: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Advance the state across a gap with no observations.
+    """Advance state and covariance across ``dt_years``, damping momentum as it goes.
 
     The level integrates a decaying velocity rather than a constant one, so a short
-    burst of improvement cannot compound into an unbounded forecast.
+    burst of improvement cannot compound into an unbounded forecast. Covariance is
+    capped at the no-evidence prior: however long the silence, we can never be more
+    uncertain about a founder than we were before we had ever heard of them.
     """
-    decay = float(np.exp(-_DECAY_RATE * dt_years))
-    velocity = float(x[1])
-    displacement = velocity * (1.0 - decay) / _DECAY_RATE
-    x = np.array([float(x[0]) + displacement, velocity * decay])
-
     transition = _F(dt_years)
+    x = transition @ x
     covariance = transition @ covariance @ transition.T + _Q(dt_years, q)
     covariance[0, 0] = min(covariance[0, 0], P0[0])
     covariance[1, 1] = min(covariance[1, 1], P0[1])
@@ -357,10 +450,7 @@ def _run_filter(entity_id: UUID, as_of: datetime) -> tuple[np.ndarray, np.ndarra
     last_t: datetime | None = None
     for observation in observations_for_entity:
         if last_t is not None:
-            dt_years = _dt_years(observation.observed_at, last_t)
-            transition = _F(dt_years)
-            x = transition @ x
-            covariance = transition @ covariance @ transition.T + _Q(dt_years, q)
+            x, covariance = _propagate(x, covariance, _dt_years(observation.observed_at, last_t), q)
         measurement_noise = _noise_for_schema(observation)
         innovation = (_H @ covariance @ _H.T).item() + measurement_noise
         gain = (covariance @ _H.T) / innovation
@@ -372,11 +462,32 @@ def _run_filter(entity_id: UUID, as_of: datetime) -> tuple[np.ndarray, np.ndarra
     if last_t is not None:
         gap = _dt_years(as_of, last_t)
         if gap > 0:
-            x, covariance = _propagate_through_silence(x, covariance, gap, q)
+            x, covariance = _propagate(x, covariance, gap, q)
     return x, covariance, contributing
 
 
+def trend_per_days(trend: float, days: float) -> float:
+    """Convert ``FounderScore.trend`` (capability per YEAR) to capability per ``days``.
+
+    ``trend`` is the velocity component of the filter state, and every transition is
+    built from ``_dt_years``, so its unit is capability-per-year -- NOT per day. A
+    renderer that wants a per-30-day delta must divide by 365.25, not multiply by 30:
+    ``trend_per_days(fs.trend, 30)``, i.e. ``fs.trend * 30 / 365.25``. Treating the
+    value as per-day overstates it by a factor of 365.25.
+    """
+    return float(trend) * float(days) / _DAYS_PER_YEAR
+
+
 def founder(entity_id: UUID, as_of: datetime) -> FounderScore:
+    """Score ``entity_id`` from evidence observed at or before ``as_of``.
+
+    Units of the returned ``FounderScore``:
+
+    * ``mu``   -- capability on a 0..1 scale.
+    * ``band`` -- one posterior standard deviation of ``mu``, same 0..1 scale.
+    * ``trend`` -- velocity of ``mu`` in capability units per YEAR. Use
+      ``trend_per_days`` to render it over any other horizon.
+    """
     if _active_model() == "beta_binomial":
         from memory import score_fallback
 
@@ -397,5 +508,5 @@ def forecast(entity_id: UUID, as_of: datetime, k_days: int) -> tuple[float, floa
     q, _ = _params()
     state, covariance, _ = _run_filter(entity_id, as_of)
     dt_years = float(k_days) / _DAYS_PER_YEAR
-    state, covariance = _propagate_through_silence(state, covariance, dt_years, q)
+    state, covariance = _propagate(state, covariance, dt_years, q)
     return float(np.clip(state[0], 0.0, 1.0)), float(np.sqrt(max(covariance[0, 0], 0.0)))

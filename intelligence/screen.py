@@ -20,6 +20,7 @@ from numbers import Real
 from uuid import UUID
 
 from core import llm
+from intelligence import flags
 from schema.events import Axis, Event, EventKind, FounderScore, ScreeningResult
 
 Judge = Callable[..., str | dict]
@@ -73,7 +74,9 @@ def founder_axis(fs: FounderScore) -> Axis:
 
 def _llm_axis(events: list[Event], judge: Judge, system: str) -> Axis:
     events = [
-        event for event in events if event.kind != EventKind.INTEGRITY and not event.integrity_flags
+        event
+        for event in events
+        if event.kind != EventKind.INTEGRITY and not flags.is_impeached(event)
     ]
     if not events:
         return Axis(**_FALLBACK)

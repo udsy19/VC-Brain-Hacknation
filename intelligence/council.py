@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 
 from core import llm
-from intelligence import dissent
+from intelligence import dissent, flags
 from schema.events import AntiMemo, Event, EventKind, ScreeningResult
 
 Judge = Callable[..., str | dict]
@@ -137,7 +137,7 @@ def _packet(
         if event.company_id == company_id
         and event.observed_at <= as_of
         and event.kind != EventKind.INTEGRITY
-        and not event.integrity_flags
+        and not flags.is_impeached(event)
     ]
     docs = [
         {

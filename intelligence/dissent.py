@@ -17,6 +17,7 @@ from datetime import datetime
 from uuid import UUID
 
 from core import llm
+from intelligence import flags
 from schema.events import AntiMemo, Event, EventKind, ScreeningResult
 
 Judge = Callable[..., str | dict]
@@ -33,7 +34,11 @@ _PROMPT = (
     "Return JSON with bear_case (nonempty string), weakest_evidence (nonempty list of strings), "
     "load_bearing_claim (nonempty string), and bear_axes (founder, market, idea_vs_market; "
     "each 0..1), plus evidence_event_ids (only supplied ids). The axes stay separate and are "
-    "never averaged."
+    "never averaged.\n"
+    "Score each bear axis YOURSELF from the supplied evidence, as the lowest defensible "
+    "reading a sceptic could justify. You have deliberately not been shown the optimistic "
+    "scores; do not guess at them or try to agree with them. An independent number is the "
+    "entire point — a bear axis that matches the bull is worth nothing."
 )
 
 
@@ -68,7 +73,14 @@ def generate_from_evidence(
     screening: ScreeningResult,
     judge: Judge = llm.complete,
 ) -> AntiMemo:
-    """Pure dissent core over one frozen, integrity-clean evidence packet."""
+    """Pure dissent core over one frozen, integrity-clean evidence packet.
+
+    The filter must stay identical to the memo's (api/memo.py::_evidence): the
+    anti-memo only means something if it argues from the SAME evidence graph with
+    the objective inverted. A blanket integrity filter here dropped provenance-flagged
+    events the memo kept, so the bear case was blind to ~20-25% of the evidence for
+    exactly the Type 6 archetype — a bull and a bear reading different books.
+    """
     if screening.company_id != company_id or screening.as_of != as_of:
         raise ValueError("screening snapshot does not match the frozen evidence cutoff")
     evidence = [
@@ -77,7 +89,7 @@ def generate_from_evidence(
         if event.company_id == company_id
         and event.observed_at <= as_of
         and event.kind != EventKind.INTEGRITY
-        and not event.integrity_flags
+        and not flags.is_impeached(event)
     ]
     docs = [
         {
@@ -88,6 +100,14 @@ def generate_from_evidence(
         }
         for event in evidence
     ]
+    # The BULL scores. They are the comparison basis and the bear agent must never see
+    # them: handing them over produced a model that echoed them back verbatim (0.27343…
+    # returned to four significant figures), so abs(bull - bear) was structurally zero
+    # on every company. axis_spreads read {0.0, 0.0, 0.0} everywhere, uncertainty was
+    # always 0 so "wide spread -> no-call" could never fire, and the UI rendered three
+    # empty bars — which a viewer reads as "bull and bear agree perfectly", the exact
+    # opposite of the truth. The bear agent now scores the evidence independently and
+    # the spread is computed here, against numbers it was never shown.
     axes = {
         "founder": screening.founder.score,
         "market": screening.market.score,
@@ -101,7 +121,7 @@ def generate_from_evidence(
             _PROMPT,
             system=_SYSTEM,
             tier="deep",
-            untrusted=json.dumps({"events": docs, "axes": axes}),
+            untrusted=json.dumps({"events": docs}),
             json_mode=True,
         )
         data = raw if isinstance(raw, dict) else json.loads(raw)

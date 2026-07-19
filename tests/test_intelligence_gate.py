@@ -149,7 +149,7 @@ def test_future_and_integrity_marked_events_are_ignored() -> None:
         _event(
             source=Source.DECK,
             claim="scheduler engine",
-            integrity_flags=["review_required"],
+            integrity_flags=["injection_stripped"],
         ),
     ]
     decision = gate.decide(COMPANY_ID, _score(mu=0.55, band=0.20), events, T0)

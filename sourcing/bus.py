@@ -25,7 +25,7 @@ from uuid import UUID
 import httpx
 
 from schema.events import Event, EventKind, RawSignal, Source
-from sourcing.sanitize import sanitize
+from sourcing.sanitize import STRIPPED_FLAG, sanitize, sanitize_tree
 
 log = logging.getLogger(__name__)
 
@@ -89,22 +89,45 @@ def prepare(raw: RawSignal) -> Prepared:
 def ingest(raw: RawSignal) -> list[Event]:
     prep = prepare(raw)
     meta = raw.meta
-    payload = {k: v for k, v in meta.items() if k not in _RESERVED}
+
+    # raw.content is not the only channel into a prompt. Everything a scanner puts in
+    # meta lands in payload or evidence_span, and the memo cites evidence_span
+    # verbatim — so meta takes the same funnel. See sanitize.sanitize_tree.
+    ctx = {
+        "source_url": raw.source_url,
+        "source": raw.source,
+        "observed_at": prep.observed_at,
+        "entity_id": _uuid(meta.get("entity_id")),
+        "company_id": _uuid(meta.get("company_id")),
+    }
+    meta_integrity: list[Event] = []
+
+    payload, found = sanitize_tree({k: v for k, v in meta.items() if k not in _RESERVED}, **ctx)
+    meta_integrity.extend(found)
     payload["text"] = prep.clean_text[:4000]
+
+    span = meta.get("evidence_span")
+    if span:
+        span, found = sanitize_tree(span, **ctx)
+        meta_integrity.extend(found)
+
+    flags = prep.integrity_flags + list(meta.get("integrity_flags", []))
+    if meta_integrity and STRIPPED_FLAG not in flags:
+        flags = flags + [STRIPPED_FLAG]
 
     event = Event(
         kind=EventKind(meta["kind"]) if meta.get("kind") else DEFAULT_KIND[raw.source],
         source=raw.source,
         source_url=raw.source_url,
         observed_at=prep.observed_at,
-        entity_id=_uuid(meta.get("entity_id")),
-        company_id=_uuid(meta.get("company_id")),
+        entity_id=ctx["entity_id"],
+        company_id=ctx["company_id"],
         payload=payload,
-        evidence_span=meta.get("evidence_span") or prep.clean_text[:280] or None,
+        evidence_span=span or prep.clean_text[:280] or None,
         confidence=float(meta.get("confidence", 1.0)),
-        integrity_flags=prep.integrity_flags + list(meta.get("integrity_flags", [])),
+        integrity_flags=flags,
     )
-    return prep.integrity_events + [event]
+    return prep.integrity_events + meta_integrity + [event]
 
 
 def _stamp(raw: RawSignal) -> tuple[datetime, list[str]]:

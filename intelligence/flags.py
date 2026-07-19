@@ -25,6 +25,10 @@ from uuid import UUID
 
 from schema.events import Event, EventKind, Source
 
+# Reused, not re-tuned: sourcing/burst.py computes the same "burst vs substance"
+# judgement from per-commit data. One set of thresholds, so the two cannot drift.
+from sourcing.burst import MIN_REAL_DIFF_LINES, SUBSTANCE_FLOOR, TEST_RATIO_TARGET
+
 # ---------------------------------------------------------------------------
 # Observation-noise contract with A (memory/score.py). Agreed payload:
 # GREEN_FLAG.payload == {rule_id, question, weight, fired, evidence_event_ids}
@@ -244,21 +248,83 @@ def _releases_same_repo(events: Sequence[Event]) -> tuple[bool, list[Event]]:
     return n >= 2, [e for e in rel if _repo(e) == top][:3]
 
 
+def _num(payload: dict, key: str) -> float | None:
+    v = payload.get(key)
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _burst_substance(payload: dict) -> float | None:
+    """Substance of one commit burst in [0,1], or None if the payload cannot say.
+
+    TWO payload vocabularies exist in this corpus and both have to work:
+
+      - per-burst markers — has_tests / diff_entropy / file_diversity. Only the
+        backtest fixture carries these.
+      - aggregate counters — commits / net_lines / tests_added / whitespace_only_pct /
+        rename_or_move_pct / distinct_messages. EVERY archetype fixture carries these,
+        and the demo runs on the archetype fixtures.
+
+    The rule used to read only the first vocabulary. On the archetype corpus it
+    therefore matched NOBODY while still reporting applicable, so it sat in the
+    denominator as a permanent NO — actively penalising Ferrite Labs, the legitimate
+    high-volume control (611 tests added, 61,400 net lines) that this rule exists
+    specifically to exonerate. DEMO.md has the presenter say "we don't false-positive
+    fast builders, and that's measured, not asserted"; until now it was asserted.
+
+    Components mirror sourcing/burst.py::burst_signature, which computes the same
+    concept from per-commit data, and reuse its calibrated thresholds so the two
+    definitions of "substance" cannot drift apart.
+    """
+    # Vocabulary 1: explicit per-burst markers.
+    marks = []
+    if "has_tests" in payload:
+        marks.append(1.0 if _flag(payload.get("has_tests")) else 0.0)
+    entropy = _num(payload, "diff_entropy")
+    if entropy is not None:
+        marks.append(min(max(entropy, 0.0), 1.0))
+    diversity = _num(payload, "file_diversity")
+    if diversity is not None:
+        marks.append(min(diversity / 3.0, 1.0))
+    if marks:
+        return sum(marks) / len(marks)
+
+    # Vocabulary 2: aggregate counters. Each component is a ratio in [0,1] so that a
+    # big burst cannot buy substance with volume — the whole Type 5 guard.
+    commits = _num(payload, "commits")
+    if not commits or commits <= 0:
+        return None
+    parts: list[float] = []
+
+    tests_added = _num(payload, "tests_added")
+    if tests_added is not None:
+        parts.append(min(tests_added / (commits * TEST_RATIO_TARGET), 1.0))
+
+    trivial = (_num(payload, "whitespace_only_pct") or 0.0) + (
+        _num(payload, "rename_or_move_pct") or 0.0
+    )
+    if "whitespace_only_pct" in payload or "rename_or_move_pct" in payload:
+        parts.append(min(max(1.0 - trivial, 0.0), 1.0))
+
+    distinct = _num(payload, "distinct_messages")
+    if distinct is not None:
+        # 3,170 distinct messages across 3,402 commits is somebody working. Six
+        # distinct messages across 3,117 is a script.
+        parts.append(min(distinct / commits, 1.0))
+
+    net_lines = _num(payload, "net_lines")
+    if net_lines is not None:
+        parts.append(min((net_lines / commits) / MIN_REAL_DIFF_LINES, 1.0))
+
+    return sum(parts) / len(parts) if parts else None
+
+
 def _burst_with_substance(events: Sequence[Event]) -> tuple[bool, list[Event]]:
-    """Burst alone is never the flag (Type 5 guard) — substance markers required."""
-    hits = [
-        e
-        for e in _of_kind(events, EventKind.COMMIT_BURST)
-        if _flag(e.payload.get("has_tests"))
-        or (
-            isinstance(e.payload.get("diff_entropy"), (int, float))
-            and e.payload["diff_entropy"] >= 0.5
-        )
-        or (
-            isinstance(e.payload.get("file_diversity"), (int, float))
-            and e.payload["file_diversity"] >= 3
-        )
-    ]
+    """Burst alone is never the flag (Type 5 guard) — substance must be measured."""
+    hits = []
+    for e in _of_kind(events, EventKind.COMMIT_BURST):
+        substance = _burst_substance(e.payload)
+        if substance is not None and substance >= SUBSTANCE_FLOOR:
+            hits.append(e)
     return bool(hits), hits[:3]
 
 
@@ -550,6 +616,18 @@ IMPEACHING_FLAGS: frozenset[str] = frozenset(
 )
 
 
+def is_impeached(event: Event) -> bool:
+    """True only if the event's CONTENT cannot be trusted.
+
+    Every module that filters evidence must call this rather than testing
+    `event.integrity_flags` for emptiness. A blanket test reads "this event has a
+    note attached" as "this event is worthless", which voids the entire Type 6
+    cohort — see IMPEACHING_FLAGS above. `tests/test_no_blanket_integrity_filter.py`
+    fails if any module reintroduces the blanket form.
+    """
+    return bool(set(event.integrity_flags) & IMPEACHING_FLAGS)
+
+
 def evaluate_events(events: list[Event], entity_id: UUID, as_of: datetime) -> list[Event]:
     """Pure core: as_of-scoped events in, one GREEN_FLAG event per APPLICABLE rule out.
 
@@ -562,7 +640,7 @@ def evaluate_events(events: list[Event], entity_id: UUID, as_of: datetime) -> li
         if e.entity_id == entity_id
         and e.observed_at <= as_of
         and e.kind not in {EventKind.GREEN_FLAG, EventKind.INTEGRITY}
-        and not (set(e.integrity_flags) & IMPEACHING_FLAGS)
+        and not is_impeached(e)
     ]
     if not events:
         return []
@@ -622,7 +700,7 @@ def evaluate(
         # Same rule as evaluate_events: only IMPEACHING flags disqualify evidence.
         # This filter is duplicated here, so leaving it un-fixed kept the entire
         # non-Latin-script cohort at zero flags even after the core was corrected.
-        and not (set(event.integrity_flags) & IMPEACHING_FLAGS)
+        and not is_impeached(event)
     ]
     per_rule = evaluate_events(scoped, entity_id=entity_id, as_of=as_of)
     if not scoped:

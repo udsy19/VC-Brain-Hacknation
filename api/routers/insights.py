@@ -255,13 +255,24 @@ def _backtest_view(cal: dict) -> dict:
     ]
 
     peak_control = max((m.get("peak_mu") or 0 for m in controls), default=None)
+    # controls_clearing_threshold is a LIST of the controls that cleared. Formatting it
+    # directly rendered "H12 gate: [] of 4 controls cleared" on screen — the gate's own
+    # headline sentence, printed as a python repr.
     cleared = cal.get("controls_clearing_threshold")
+    n_cleared = len(cleared) if isinstance(cleared, (list, tuple, set)) else (cleared or 0)
+
+    # The controls are SYNTHETIC — invented composites, not real non-breakout
+    # companies — and the same author wrote both sides of the comparison. The
+    # separation is real in that the scorer produced it unaided, but a synthetic
+    # control is a much weaker test than a real one, and the sentence has to say so
+    # rather than implying these are real contemporaries.
     detail = (
-        f"H12 gate: {cleared if cleared is not None else 0} of {len(controls)} controls "
+        f"H12 gate: {n_cleared} of {len(controls)} controls "
         f"cleared the {threshold} threshold"
         + (f" (highest control: {_pct(peak_control)})." if peak_control is not None else ".")
-        + " Controls are matched founders from the same era who did not break out. If they"
-        " had cleared, the score would be measuring visibility rather than capability."
+        + " Controls are synthetic composites built to be visible but not shipping,"
+        " replayed through the live scorer. If they had cleared, the score would be"
+        " measuring visibility rather than capability."
     )
 
     return {

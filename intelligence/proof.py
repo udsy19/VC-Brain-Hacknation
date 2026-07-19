@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from core import llm
+from intelligence import flags
 from schema.events import Challenge, Event, EventKind, Source, utcnow
 
 Judge = Callable[..., str | dict]
@@ -108,7 +109,7 @@ def generate(company_id: UUID, judge: Judge | None = None) -> Challenge:
     issued_at = utcnow()
     judge = judge or llm.complete
     claims = store.events(company_id=company_id, kind=EventKind.DECK_CLAIM, as_of=issued_at)
-    claims = [claim for claim in claims if not claim.integrity_flags and _claim_text(claim)]
+    claims = [claim for claim in claims if not flags.is_impeached(claim) and _claim_text(claim)]
     if not claims:
         return _fallback(company_id, issued_at)
     claim = max(claims, key=lambda event: (event.confidence, event.observed_at))
@@ -180,7 +181,7 @@ def _issued_event(challenge_id: UUID, as_of: datetime) -> Event:
         if event.payload.get("challenge_id") == str(challenge_id)
         and event.source == Source.PROOF_PROTOCOL
         and event.company_id is not None
-        and not event.integrity_flags
+        and not flags.is_impeached(event)
     ]
     if len(matches) != 1:
         raise ValueError("challenge issuance receipt is missing or ambiguous")

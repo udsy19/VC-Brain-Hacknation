@@ -227,3 +227,167 @@ def test_routes_survive_every_module_being_unimplemented(client: TestClient) -> 
 def test_as_of_is_honoured_on_score_history(client: TestClient) -> None:
     past = (T0 - timedelta(days=365)).isoformat()
     assert client.get(f"/companies/{CID}/score-history", params={"as_of": past}).status_code == 200
+
+
+# --- serving what we compute, and disclosing what we don't ------------------
+
+
+def _axes(payload: dict) -> list[tuple[str, dict]]:
+    return list((payload.get("axes") or {}).items())
+
+
+def test_no_axis_ever_pads_evidence_with_placeholders(client: TestClient) -> None:
+    """A padded receipt renders as a clickable trace that drills into nothing.
+
+    Empty strings in evidence_event_ids were served on market and idea-vs-market for
+    EVERY company — 5-9 fake receipts each. An axis with no receipts must say so.
+    """
+    for payload in [client.get("/companies").json()[0], client.get(f"/companies/{CID}").json()]:
+        for name, axis in _axes(payload):
+            ids = axis["evidence_event_ids"]
+            assert all(str(i).strip() for i in ids), f"{name} padded its receipts: {ids}"
+
+
+def test_every_axis_discloses_whether_it_was_computed(client: TestClient) -> None:
+    """The `live` flag the docstring promised. Documented-but-absent is worse than absent."""
+    for payload in [client.get("/companies").json()[0], client.get(f"/companies/{CID}").json()]:
+        for name, axis in _axes(payload):
+            assert isinstance(axis.get("live"), bool), f"{name} does not disclose live-ness"
+            # An axis with no receipts must state why rather than just looking empty.
+            if not axis["evidence_event_ids"]:
+                assert axis.get("reason"), f"{name} is empty without saying why"
+
+
+def test_gate_says_where_it_came_from(client: TestClient) -> None:
+    """The engine must win over the fixture, and a fallback must be VISIBLE.
+
+    The fixture authored `proceed` for Ferrite. With no store behind it the engine
+    cannot answer, so the fallback is legitimate — but it has to be declared, not
+    served as though the decision engine had produced it.
+    """
+    row = next(c for c in client.get("/companies").json() if c["name"] == "Ferrite")
+    assert row["gate_source"] in {"computed", "seeded_fixture", "unavailable"}
+    if row["gate_source"] != "computed":
+        assert row["gate_rationale"] is None or isinstance(row["gate_rationale"], str)
+    # Whatever happens, the gate is never silently invented as the permissive verdict.
+    assert row["gate"] in {"proceed", "no_call", "proof_protocol", None}
+
+
+def test_gate_is_not_defaulted_to_proceed_when_unknown() -> None:
+    """An absence of data must not become the most permissive verdict in the system."""
+    from api.main import _gate_for
+
+    gate, source, _ = _gate_for(None, datetime.now(timezone.utc), {})
+    assert gate is None and source == "unavailable"
+
+
+# --- the council must not open the lock it exists to enforce ----------------
+
+
+def test_empty_council_does_not_unlock_the_recommendation(client: TestClient) -> None:
+    """council.deliberate() returns decision=None/anti_memo=None BY DESIGN — it is the
+    LOCKED view. Unlocking on it made the endpoint that represents the lock the one
+    endpoint that bypassed it."""
+    body = client.post(f"/companies/{CID}/council").json()
+    assert body.get("anti_memo") is None, "fixture assumption: this council shows no bear case"
+    memo = client.get(f"/companies/{CID}/memo?dissent_viewed=true").json()
+    assert memo["recommendation"] is None, "an empty council unlocked the recommendation"
+
+
+def test_council_that_argues_a_bear_case_does_unlock(client: TestClient) -> None:
+    from api.routers import companies as mod
+
+    assert mod._rendered_bear_case({"anti_memo": {"bear_case": "the buffer is not theirs"}})
+    assert mod._rendered_bear_case({"bear_case": "thin evidence"})
+    assert not mod._rendered_bear_case({"anti_memo": None, "decision": None})
+    assert not mod._rendered_bear_case({"anti_memo": {"bear_case": "   "}})
+
+
+# --- ranking, trend units, and the trace hop -------------------------------
+
+
+def test_rank_order_is_monotonic_under_the_declared_policy() -> None:
+    """min_axis_with_momentum_tiebreak: weakest axis first, momentum only to break ties.
+
+    Founder score alone must NOT predict order — a company can lead on founder and
+    still rank lower because its market axis is weaker. That is the policy working.
+    """
+    from api.main import _rank_key
+
+    def row(f, m, i, trend):
+        return {
+            "axes": {
+                "founder": {"score": f, "trend": trend},
+                "market": {"score": m},
+                "idea_vs_market": {"score": i},
+            }
+        }
+
+    rows = [row(66.3, 60.0, 67.0, 1.94), row(63.7, 62.0, 61.0, 0.65), row(73.8, 72.0, 76.0, 1.25)]
+    ordered = sorted(rows, key=_rank_key)
+    mins = [min(a["score"] for a in r["axes"].values()) for r in ordered]
+    assert mins == sorted(mins, reverse=True), f"weakest-axis order violated: {mins}"
+    # The 66.3-founder row ranks BELOW the 63.7 one because its market axis is 60 < 62.
+    assert [r["axes"]["founder"]["score"] for r in ordered] == [73.8, 63.7, 66.3]
+
+
+def test_trend_is_reported_per_30_days_not_per_year() -> None:
+    """FounderScore.trend is score-units PER YEAR (memory.score runs dt in years).
+    Treating it as per-day rendered every trend 365.25x too large."""
+    from api.main import _TREND_YEARS_PER_30_DAYS
+
+    assert _TREND_YEARS_PER_30_DAYS == pytest.approx(30.0 / 365.25)
+    # A per-year trend of 0.19 is ~1.56 in per-30-day score units, not 568.
+    assert 0.19 * 100 * _TREND_YEARS_PER_30_DAYS == pytest.approx(1.56, abs=0.05)
+
+
+def test_screen_axes_do_not_fabricate_a_band_or_inflate_direction() -> None:
+    """The screen produces no uncertainty band and its trend is a -1..1 DIRECTION.
+
+    Deriving a band from confidence would draw a made-up interval in the same units as
+    the founder axis's real filter-computed band; rescaling the direction by 100 gave
+    market a trend of 100.0 on a 0..100 axis.
+    """
+    from types import SimpleNamespace
+
+    from api.main import TREND_UNIT_DIRECTION, _axis_from_screen
+
+    axis = _axis_from_screen(
+        SimpleNamespace(score=0.8, trend=1.0, confidence=0.7, evidence_event_ids=["abc"])
+    )
+    assert axis["band"] is None, "a band the screen never computed was invented"
+    assert axis["trend"] == 1.0, "a directional trend was rescaled into an impossible rate"
+    assert axis["trend_unit"] == TREND_UNIT_DIRECTION
+    assert axis["live"] is True and axis["evidence_event_ids"] == ["abc"]
+
+
+def test_trace_never_presents_a_generated_summary_as_a_receipt() -> None:
+    """A green-flag rollup's span is a sentence the system wrote about itself. It must
+    be labelled as such, and the real receipt comes from the events it rolled up."""
+    from api.routers.companies import _trace_payload
+
+    common = dict(
+        company_id="c", event_id="e", kind="green_flag", source="derived",
+        observed_at=T0.isoformat(), confidence=1.0, integrity_flags=[], payload={},
+        contributing_to=None, source_url=None, degraded=False,
+    )
+    # A rollup with nothing behind it has NO receipt — has_span must be honest.
+    bare = _trace_payload(quoted_span="1/24 applicable green flags fired",
+                          span_is_generated=True, **common)
+    assert bare["has_span"] is False
+    assert "GENERATED BY THIS SYSTEM" in bare["chain"][2]["detail"]
+
+    # Following the hop lands on a real commit span, and that becomes the receipt.
+    hopped = _trace_payload(
+        quoted_span="1/24 applicable green flags fired",
+        span_is_generated=True,
+        underlying_evidence=[{
+            "event_id": "u", "kind": "repo_activity", "source": "github",
+            "source_url": "https://github.com/tensorpage/pagekv/commits/main",
+            "quoted_span": 'commit 4b91e0c "pagekv: block table with refcounted pages"',
+            "observed_at": T0.isoformat(),
+        }],
+        **common,
+    )
+    assert hopped["has_span"] is True
+    assert "4b91e0c" in next(s["detail"] for s in hopped["chain"] if s["step"] == "source span")

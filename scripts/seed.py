@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from memory import store  # noqa: E402
 from schema.events import Event, EventKind, Source  # noqa: E402
+from sourcing.sanitize import sanitize_event  # noqa: E402
 
 SEED_DIR = ROOT / "data" / "seed"
 NAMESPACE = UUID("6f1a3c2e-9b47-4d51-a8e0-2c7f5b91d403")
@@ -67,35 +68,68 @@ def _shift() -> timedelta:
     return delta if delta > timedelta(0) else timedelta(0)
 
 
-def _parse(raw: str) -> datetime:
+def _parse(raw: str, shift: timedelta | None = None) -> datetime:
     dt = datetime.fromisoformat(raw)
     if dt.tzinfo is None:
         raise ValueError(f"observed_at must be timezone-aware: {raw!r}")
-    return dt + _shift()
+    return dt + (_shift() if shift is None else shift)
 
 
-def build_events(profile: dict[str, Any], ids: dict[str, UUID]) -> list[Event]:
-    """One profile -> its events, with entity/company ids already resolved."""
+def build_events(
+    profile: dict[str, Any], ids: dict[str, UUID], shift: timedelta | None = None
+) -> list[tuple[str, Event]]:
+    """One profile -> (trace_ref, event) pairs, with entity/company ids already resolved.
+
+    Refs stay anchored to the FIXTURE index, never to position in the output: sanitizing
+    emits extra INTEGRITY events, and a positional ref would silently renumber every
+    event after the first injection — breaking the trace drill-down that the demo clicks.
+
+    Fixture text is authored UNSANITIZED on purpose (the adversarial deck really does
+    carry an injection on slide 7) — detection is the pipeline's job, not the
+    fixture's. This function is where that job gets done: seeding wrote Events
+    straight to the store without ever passing them through the funnel, so the
+    injection landed in production with integrity_flags=[] and there were zero
+    INTEGRITY events in the whole database. Every seeded event now takes the same
+    sanitizer every scanner takes, and the strip is recorded as a real detection.
+
+    `shift` overrides the corpus-wide date shift. The backtest cohort passes
+    timedelta(0): its dates ARE the claim ("we would have seen this in 2013"), so
+    moving them forward to keep a demo warm would destroy the thing being tested.
+    """
     slug = profile["company_id"]
     entity_id = ids[profile["founders"][0]["key"]]
     out = []
     for i, raw in enumerate(profile["events"]):
         observed = raw["observed_at"]
-        out.append(
-            Event(
-                event_id=event_uuid(slug, i, observed),
-                entity_id=entity_id,
-                company_id=ids[raw.get("company", slug)],
-                kind=EventKind(raw["kind"]),
-                source=Source(raw["source"]),
-                source_url=raw.get("source_url"),
-                observed_at=_parse(observed),
-                payload=raw.get("payload", {}),
-                evidence_span=raw.get("evidence_span"),
-                confidence=raw.get("confidence", 1.0),
-                integrity_flags=raw.get("integrity_flags", []),
-            )
+        event = Event(
+            event_id=event_uuid(slug, i, observed),
+            entity_id=entity_id,
+            company_id=ids[raw.get("company", slug)],
+            kind=EventKind(raw["kind"]),
+            source=Source(raw["source"]),
+            source_url=raw.get("source_url"),
+            observed_at=_parse(observed, shift),
+            payload=raw.get("payload", {}),
+            evidence_span=raw.get("evidence_span"),
+            confidence=raw.get("confidence", 1.0),
+            integrity_flags=raw.get("integrity_flags", []),
         )
+        clean, integrity = sanitize_event(event)
+        # Deterministic ids keep the seed idempotent: a re-run must not duplicate the
+        # INTEGRITY trace any more than it duplicates the event that produced it.
+        for n, found in enumerate(integrity):
+            out.append(
+                (
+                    f"{slug}#{i}!integrity{n}",
+                    found.model_copy(
+                        update={
+                            "event_id": event_uuid(slug, i, f"{observed}|integrity|{n}"),
+                            "entity_id": entity_id,
+                        }
+                    ),
+                )
+            )
+        out.append((f"{slug}#{i}", clean))
     return out
 
 
@@ -111,12 +145,56 @@ def resolve_ids(profile: dict[str, Any], archetype: int) -> dict[str, UUID]:
     return ids
 
 
+def cohort_profiles() -> list[dict[str, Any]]:
+    """The backtest cohort, reshaped onto the same profile contract as the archetypes.
+
+    The cohort has to enter the store through THIS function rather than a private
+    path of its own. The backtest's whole claim is that it replays founders the same
+    way live does; a bespoke loader would be the "special backtest mode" that the
+    claim rules out. One shape in, one shape out.
+    """
+    from backtest import collect
+
+    return [
+        {
+            "company_id": m["id"],
+            "company_name": m["company_name"],
+            "founders": [
+                {
+                    "key": f"{m['id']}-founder",
+                    "name": m["founder"]["display_name"],
+                    "name_normalized": m["founder"]["name_normalized"],
+                }
+            ],
+            "events": m.get("events", []),
+        }
+        for m in collect.load_cohort()["members"]
+    ]
+
+
 def load() -> dict[str, Any]:
     existing = {e.event_id for e in store.events(as_of=END_OF_TIME)}
     per_archetype: dict[int, dict[str, int]] = {}
     resolved: dict[str, str] = {}
     event_refs: dict[str, str] = {}
     appended = skipped = 0
+
+    def _ingest(profile: dict[str, Any], archetype: int | None, counts: dict[str, int]) -> None:
+        nonlocal appended, skipped
+        ids = resolve_ids(profile, archetype)
+        resolved.update({k: str(v) for k, v in ids.items()})
+        counts["companies"] += 1
+        # The cohort's dates are the claim under test; never shift them (see build_events).
+        shift = timedelta(0) if archetype is None else None
+        for ref, event in build_events(profile, ids, shift):
+            event_refs[ref] = str(event.event_id)
+            if event.event_id in existing:
+                skipped += 1
+                continue
+            store.append(event)
+            existing.add(event.event_id)
+            appended += 1
+            counts["events"] += 1
 
     for path in fixture_files():
         fixture = json.loads(path.read_text(encoding="utf-8"))
@@ -125,18 +203,12 @@ def load() -> dict[str, Any]:
             archetype, {"label": fixture["label"], "companies": 0, "events": 0}
         )
         for profile in fixture["profiles"]:
-            ids = resolve_ids(profile, archetype)
-            resolved.update({k: str(v) for k, v in ids.items()})
-            counts["companies"] += 1
-            for i, event in enumerate(build_events(profile, ids)):
-                event_refs[f"{profile['company_id']}#{i}"] = str(event.event_id)
-                if event.event_id in existing:
-                    skipped += 1
-                    continue
-                store.append(event)
-                existing.add(event.event_id)
-                appended += 1
-                counts["events"] += 1
+            _ingest(profile, archetype, counts)
+
+    cohort_counts = {"label": "Backtest cohort", "companies": 0, "events": 0}
+    for profile in cohort_profiles():
+        _ingest(profile, None, cohort_counts)
+    per_archetype[0] = cohort_counts
 
     # Never write the id map when loading into a throwaway database. The test suite
     # calls load() against a tmp db, and writing here overwrote the real map with

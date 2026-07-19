@@ -58,7 +58,7 @@ def _answer(event_id=None) -> dict:
 def test_generate_from_evidence_filters_events_and_routes_text_only_as_untrusted() -> None:
     included = _event("included marker")
     future = _event("future marker", observed_at=T0 + timedelta(seconds=1))
-    flagged = _event("flagged marker", integrity_flags=["review_required"])
+    flagged = _event("flagged marker", integrity_flags=["injection_stripped"])
     foreign = _event("foreign marker", company_id=OTHER_COMPANY_ID)
     seen: dict = {}
 
@@ -102,6 +102,41 @@ def test_axis_spreads_are_individual_absolute_differences_with_bear_clipping() -
         "market": pytest.approx(0.6),
         "idea_vs_market": pytest.approx(0.2),
     }
+
+
+def test_bear_agent_is_never_shown_the_bull_scores() -> None:
+    """axis_spreads is abs(bull - bear). Handing the bull numbers to the bear agent made
+    it echo them back, so every spread was structurally 0.0 — rendered in the UI as three
+    empty bars, i.e. "bull and bear agree perfectly", the opposite of the truth."""
+    seen: dict = {}
+
+    def judge(prompt, **kwargs):
+        seen["prompt"] = prompt
+        seen.update(kwargs)
+        return _answer()
+
+    screening = _screening()
+    dissent.generate_from_evidence(COMPANY_ID, T0, [_event("marker")], screening, judge)
+
+    blob = f"{seen['prompt']}{seen.get('system', '')}{seen.get('untrusted', '')}"
+    for name, axis in (
+        ("founder", screening.founder),
+        ("market", screening.market),
+        ("idea_vs_market", screening.idea_vs_market),
+    ):
+        assert str(axis.score) not in blob, (
+            f"the bull {name} score {axis.score} was handed to the bear agent; it will be "
+            f"echoed back and the spread will collapse to zero"
+        )
+
+
+def test_spread_is_nonzero_when_the_bear_disagrees() -> None:
+    """The headline number must actually measure disagreement."""
+    memo = dissent.generate_from_evidence(
+        COMPANY_ID, T0, [_event("marker")], _screening(), lambda *a, **k: _answer()
+    )
+    assert any(v > 0 for v in memo.axis_spreads.values()), memo.axis_spreads
+    assert dissent.uncertainty_from_spread(memo) > 0
 
 
 @pytest.mark.parametrize(

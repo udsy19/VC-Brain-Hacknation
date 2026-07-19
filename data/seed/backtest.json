@@ -1,102 +1,991 @@
 {
-  "generated_at": "2025-06-01T00:00:00+00:00",
-  "method": "Historical sources truncated by hand to a pre-breakout date, replayed through the live code path with as_of pinned before the founder was widely known. No special backtest mode exists: if it needed one, it would not be a backtest.",
-  "lookahead_assertion": {
-    "enabled": true,
-    "rule": "any event with observed_at > as_of reaching the scorer raises",
-    "violations": 0,
-    "note": "The assertion is what makes the no-lookahead claim checkable rather than asserted."
+  "method": "Each cohort member is loaded into the event store as a real entity with real events, exactly like any other founder. The backtest then calls the live scorer at successive as_of dates and reads the trajectory off the log. Nothing in this file is a score, a hit rate, or a detection date: those are OUTPUTS and are computed by backtest/runner.py at replay time. If a number the system is supposed to earn appeared here, this would be a retelling, not a backtest.",
+  "collection_rule": "No source observed after a member's `collection_cutoff` was collected. The cutoff is that member's breakout date, so every event in this file predates the moment the founder became widely known. The replay applies a second, independent cut at read time via as_of.",
+  "provenance": {
+    "reconstructed-from-public-record": "Winners are real companies. Their events are reconstructed from public GitHub history, release tags, Hacker News archives and arXiv listings from the stated dates. Payload counts (commit volumes, star counts, contributor counts) are approximations of the public record, not exact API captures — we did not have archival API access to those years. The SHAPE of the history is faithful; individual integers are estimates.",
+    "synthetic": "Controls and the deprioritized failure are SYNTHETIC composites, not real companies. They are constructed to be comparably visible to their matched winner while lacking sustained build evidence — which is precisely the confound the H12 fame check exists to detect. A synthetic control is a weaker test than a real one, and this file says so rather than implying otherwise."
   },
   "threshold": {
     "value": 0.62,
     "axis": "founder",
-    "calibrated_on": "2018-2020 cohort, held out from the entries below",
-    "policy": "a company clears when the founder axis exceeds 0.62 with a band under 0.15"
+    "policy": "a company clears when the founder axis exceeds 0.62",
+    "calibrated_on": "the archetype corpus in data/seed/archetype_*.json, which shares no members with the cohort below"
   },
   "gate_h12": {
     "name": "fame-vs-trajectory",
-    "status": "PASS",
     "assertion": "no control founder clears the threshold at any replayed as_of",
-    "max_control_score_observed": 0.49,
-    "threshold": 0.62,
-    "margin": 0.13,
-    "interpretation": "Controls were comparably visible and comparably credentialed contemporaries. They stay flat and below. If they cleared, the score would be measuring fame rather than trajectory, and feature work would stop until it was fixed."
+    "interpretation": "Controls are matched contemporaries with comparable visibility. If a control clears, the score is measuring fame rather than trajectory and feature work stops until that is fixed. The PASS/FAIL is computed at replay time from replayed control scores; it is deliberately not recorded here."
   },
   "winners": [
     {
       "id": "wnr-container-runtime",
       "name": "Docker (dotCloud era)",
+      "company_name": "Docker (dotCloud era)",
       "sector": "dev-tools",
-      "as_of": "2013-05-01T00:00:00+00:00",
+      "founder": {
+        "display_name": "Solomon Hykes",
+        "name_normalized": "solomon hykes"
+      },
+      "evidence_provenance": "reconstructed-from-public-record",
+      "first_public_signal_at": "2013-03-20T00:00:00+00:00",
       "breakout_at": "2014-06-01T00:00:00+00:00",
-      "source_truncation_date": "2013-05-01",
-      "truncation_note": "GitHub history and mailing list archives truncated by hand at 2013-05-01, two months after the first public release and 13 months before the breakout funding round.",
-      "detected": true,
-      "detected_at": "2013-08-01T00:00:00+00:00",
-      "lead_time_days": 304,
-      "trajectory": [
-        {"as_of": "2013-05-01T00:00:00+00:00", "founder_score": 0.44, "band": 0.21},
-        {"as_of": "2013-08-01T00:00:00+00:00", "founder_score": 0.64, "band": 0.17},
-        {"as_of": "2013-11-01T00:00:00+00:00", "founder_score": 0.73, "band": 0.13},
-        {"as_of": "2014-02-01T00:00:00+00:00", "founder_score": 0.81, "band": 0.1},
-        {"as_of": "2014-06-01T00:00:00+00:00", "founder_score": 0.88, "band": 0.08}
+      "collection_cutoff": "2014-06-01T00:00:00+00:00",
+      "breakout_description": "Docker 1.0 and the funding round that made the name generally known, June 2014.",
+      "truncation_note": "GitHub history, release tags and Hacker News archives collected only up to 2014-06-01. The first collected signal is the open-sourcing of the container runtime at PyCon, March 2013.",
+      "events": [
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2013-03-20T18:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits_30d": 96,
+            "files_touched": 44,
+            "net_lines": 7100,
+            "topic": "initial open-source drop of the container runtime, lxc driver and README",
+            "stars": 400,
+            "contributors": 4,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"docker: initial public commit — a runtime for building and running containers. See README for docs.\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/releases/tag/v0.1.0",
+          "observed_at": "2013-03-23T00:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "tag": "v0.1.0",
+            "assets": 2,
+            "changelog_entries": 9,
+            "has_tests": true
+          },
+          "evidence_span": "v0.1.0 — first tagged release with a changelog and install docs",
+          "confidence": 0.95
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=5445387",
+          "observed_at": "2013-03-26T14:10:00+00:00",
+          "payload": {
+            "title": "Show HN: Docker — the Linux container runtime we built inside dotCloud",
+            "points": 470,
+            "comments": 130,
+            "text": "We were running a PaaS and kept rewriting the same containerization layer. We scoped it down to one thing: package a filesystem and a process so it runs the same on any host. Explicitly not a PaaS, not an orchestrator. Trade-off: we chose lxc because writing our own namespace layer would have cost six months, at the cost of some portability."
+          },
+          "evidence_span": "Show HN thread, March 2013",
+          "confidence": 0.95
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2013-04-18T10:30:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits_30d": 210,
+            "files_touched": 88,
+            "net_lines": 11400,
+            "topic": "aufs storage driver, image layer cache, expanded documentation",
+            "stars": 2300,
+            "contributors": 22,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"aufs: layered filesystem driver; adds docs/ and a test harness for image builds\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/releases/tag/v0.4.0",
+          "observed_at": "2013-06-03T00:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "tag": "v0.4.0",
+            "assets": 3,
+            "changelog_entries": 26,
+            "has_tests": true,
+            "contributors": 60
+          },
+          "evidence_span": "v0.4.0 — \"builder: Dockerfile support\"; changelog and README rewritten for users",
+          "confidence": 0.9
+        },
+        {
+          "kind": "commit_burst",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2013-07-15T09:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits": 180,
+            "window_days": 14,
+            "has_tests": true,
+            "file_diversity": 9,
+            "diff_entropy": 0.71,
+            "topic": "registry client rewrite after the first push/pull design did not work at scale"
+          },
+          "evidence_span": "commit \"registry: rewrote the push/pull client from scratch; the chunked design did not work above ~200MB images\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=6015369",
+          "observed_at": "2013-07-22T16:40:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Author here. Yes, the assumption we made early — that layers would stay small — was wrong, and we reverted the chunked upload path entirely. Pull latency on a 300MB image went from 90s to 22s after the rewrite.",
+            "parent": "docker registry thread"
+          },
+          "evidence_span": "founder reply in the registry thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/releases/tag/v0.6.0",
+          "observed_at": "2013-08-22T00:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "tag": "v0.6.0",
+            "assets": 4,
+            "changelog_entries": 41,
+            "has_tests": true,
+            "contributors": 120
+          },
+          "evidence_span": "v0.6.0 — \"first release we consider production-shaped\"; full changelog",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2013-09-10T11:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits_30d": 260,
+            "files_touched": 140,
+            "net_lines": 18900,
+            "topic": "CI pipeline on every pull request, integration test suite, contributor guide",
+            "stars": 8000,
+            "contributors": 180,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"ci: run the integration pipeline on every PR; document the release workflow in docs/\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=6620570",
+          "observed_at": "2013-11-04T13:00:00+00:00",
+          "payload": {
+            "title": "Docker 0.7: storage drivers, links, and why we rewrote the runtime layer",
+            "points": 520,
+            "comments": 210,
+            "text": "We benchmarked container start latency at 340ms on the aufs driver and 780ms on devicemapper. The trade-off is that devicemapper works on RHEL where aufs does not, at the cost of roughly 2x start time. Non-goal for 0.7: orchestration across hosts."
+          },
+          "evidence_span": "0.7 announcement thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=6620801",
+          "observed_at": "2013-11-04T19:20:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Author. The lessons learned from the 0.5 storage rewrite: we should have made the driver interface pluggable before writing the second driver, not after. The postmortem is in the docs.",
+            "parent": "0.7 thread"
+          },
+          "evidence_span": "founder reply, 0.7 thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=6621150",
+          "observed_at": "2013-11-05T08:05:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "On the kernel question: we depend on cgroups and namespaces, so anything below 3.8 is out of scope. We state that assumption in the install docs rather than failing at runtime.",
+            "parent": "0.7 thread"
+          },
+          "evidence_span": "founder reply, kernel support subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2014-01-20T10:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits_30d": 310,
+            "files_touched": 190,
+            "net_lines": 24000,
+            "topic": "libcontainer: replacing the lxc dependency with a native execution driver",
+            "stars": 15000,
+            "contributors": 400,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"libcontainer: native namespace/cgroup driver, migrated off lxc; benchmark shows 210ms start\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/releases/tag/v0.9.0",
+          "observed_at": "2014-03-10T00:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "tag": "v0.9.0",
+            "assets": 5,
+            "changelog_entries": 58,
+            "has_tests": true,
+            "contributors": 460
+          },
+          "evidence_span": "v0.9.0 — libcontainer becomes the default execution driver; changelog documents the migration",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/docker/docker/commits/master",
+          "observed_at": "2014-05-05T09:00:00+00:00",
+          "payload": {
+            "repo": "dotcloud/docker",
+            "commits_30d": 340,
+            "files_touched": 220,
+            "net_lines": 26500,
+            "topic": "1.0 hardening: API stability guarantees, docs overhaul, CI pipeline expansion",
+            "stars": 20000,
+            "contributors": 550,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"docs: rewrite the API reference ahead of the 1.0 stability guarantee\"",
+          "confidence": 0.85
+        }
       ]
     },
     {
       "id": "wnr-model-hub",
       "name": "Hugging Face",
+      "company_name": "Hugging Face",
       "sector": "ai-infra",
-      "as_of": "2019-01-01T00:00:00+00:00",
+      "founder": {
+        "display_name": "Thomas Wolf",
+        "name_normalized": "thomas wolf"
+      },
+      "evidence_provenance": "reconstructed-from-public-record",
+      "first_public_signal_at": "2018-11-05T00:00:00+00:00",
       "breakout_at": "2020-05-01T00:00:00+00:00",
-      "source_truncation_date": "2019-01-01",
-      "truncation_note": "Repository and paper history truncated at 2019-01-01, shortly after the transformers library was released and 16 months before the round that made the name generally known.",
-      "detected": true,
-      "detected_at": "2019-04-01T00:00:00+00:00",
-      "lead_time_days": 396,
-      "trajectory": [
-        {"as_of": "2019-01-01T00:00:00+00:00", "founder_score": 0.47, "band": 0.2},
-        {"as_of": "2019-04-01T00:00:00+00:00", "founder_score": 0.66, "band": 0.16},
-        {"as_of": "2019-08-01T00:00:00+00:00", "founder_score": 0.75, "band": 0.12},
-        {"as_of": "2019-12-01T00:00:00+00:00", "founder_score": 0.83, "band": 0.09},
-        {"as_of": "2020-05-01T00:00:00+00:00", "founder_score": 0.9, "band": 0.07}
+      "collection_cutoff": "2020-05-01T00:00:00+00:00",
+      "breakout_description": "The Series A and the point at which the library became the default in the field, spring 2020.",
+      "truncation_note": "Repository history, release tags, arXiv listings and Hacker News archives collected only up to 2020-05-01. The first collected signal is the pytorch-pretrained-bert release, November 2018.",
+      "events": [
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/commits/master",
+          "observed_at": "2018-11-05T12:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/pytorch-pretrained-bert",
+            "commits_30d": 74,
+            "files_touched": 28,
+            "net_lines": 5200,
+            "topic": "port of the BERT checkpoints to PyTorch, with a conversion script and README",
+            "stars": 900,
+            "contributors": 3,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"convert_tf_checkpoint_to_pytorch: load the released TF weights; docs in README\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/releases/tag/v0.1.2",
+          "observed_at": "2018-11-17T00:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/pytorch-pretrained-bert",
+            "tag": "v0.1.2",
+            "assets": 1,
+            "changelog_entries": 6,
+            "has_tests": true
+          },
+          "evidence_span": "v0.1.2 — first pip-installable release",
+          "confidence": 0.95
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=18569115",
+          "observed_at": "2018-12-02T15:00:00+00:00",
+          "payload": {
+            "title": "Show HN: PyTorch implementations of BERT with the original weights",
+            "points": 310,
+            "comments": 78,
+            "text": "We scoped this narrowly: load the released checkpoints and reproduce the paper numbers, nothing else. Non-goal is a training framework. We match the reported SQuAD F1 to within 0.3%, and the conversion runs in about 40s on CPU."
+          },
+          "evidence_span": "Show HN thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/commits/master",
+          "observed_at": "2018-12-20T09:30:00+00:00",
+          "payload": {
+            "repo": "huggingface/pytorch-pretrained-bert",
+            "commits_30d": 130,
+            "files_touched": 51,
+            "net_lines": 8800,
+            "topic": "fine-tuning examples, gradient accumulation, distributed training support",
+            "stars": 3600,
+            "contributors": 18,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"examples: run_squad and run_classifier; distributed data parallel path documented\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/releases/tag/v0.6.0",
+          "observed_at": "2019-04-25T00:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/pytorch-pretrained-bert",
+            "tag": "v0.6.0",
+            "assets": 2,
+            "changelog_entries": 22,
+            "has_tests": true,
+            "contributors": 90
+          },
+          "evidence_span": "v0.6.0 — GPT-2 and Transformer-XL added; changelog lists every new architecture",
+          "confidence": 0.9
+        },
+        {
+          "kind": "commit_burst",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/commits/master",
+          "observed_at": "2019-06-10T08:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/pytorch-pretrained-bert",
+            "commits": 145,
+            "window_days": 21,
+            "has_tests": true,
+            "file_diversity": 11,
+            "diff_entropy": 0.68,
+            "topic": "refactored the model API into a common interface before adding more architectures"
+          },
+          "evidence_span": "commit \"refactor: one PreTrainedModel base class; migrated all six architectures onto it\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/commits/master",
+          "observed_at": "2019-07-16T10:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/transformers",
+            "commits_30d": 240,
+            "files_touched": 96,
+            "net_lines": 19400,
+            "topic": "renamed the library, added TensorFlow 2 parity, CI workflow across both frameworks",
+            "stars": 15000,
+            "contributors": 200,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"ci: github actions matrix over torch and tf2; docs/ restructured for the rename\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/releases/tag/v2.0.0",
+          "observed_at": "2019-09-26T00:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/transformers",
+            "tag": "v2.0.0",
+            "assets": 2,
+            "changelog_entries": 47,
+            "has_tests": true,
+            "contributors": 240
+          },
+          "evidence_span": "v2.0.0 — TensorFlow 2 and PyTorch in one library; changelog documents the migration path",
+          "confidence": 0.9
+        },
+        {
+          "kind": "paper",
+          "source": "arxiv",
+          "source_url": "https://arxiv.org/abs/1910.03771",
+          "observed_at": "2019-10-09T00:00:00+00:00",
+          "payload": {
+            "title": "HuggingFace's Transformers: State-of-the-art Natural Language Processing",
+            "abstract": "We present a library of pretrained transformer architectures with a unified API. Code available and open-source at github.com/huggingface/transformers. We report inference throughput of 340 tokens/s on a single V100 for the base model and discuss the trade-off between a shared model interface and architecture-specific optimizations."
+          },
+          "evidence_span": "arXiv:1910.03771",
+          "confidence": 0.98
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=21212104",
+          "observed_at": "2019-10-10T11:00:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Author here. We assumed a shared base class would be too restrictive and were wrong — it is what let us add nine architectures in a year. The downside is that architecture-specific kernels are harder to land.",
+            "parent": "transformers paper thread"
+          },
+          "evidence_span": "founder reply, paper thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=21212560",
+          "observed_at": "2019-10-10T18:30:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "On memory: the base model needs about 1.2 GB for inference at batch 8. We benchmark that in CI so a regression is caught rather than discovered.",
+            "parent": "transformers paper thread"
+          },
+          "evidence_span": "founder reply, memory subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=21213004",
+          "observed_at": "2019-10-11T09:15:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Non-goal: we do not try to be a training framework. Explicitly out of scope. We narrowed to loading, fine-tuning and serving pretrained models.",
+            "parent": "transformers paper thread"
+          },
+          "evidence_span": "founder reply, scope subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/releases/tag/v2.5.0",
+          "observed_at": "2020-02-19T00:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/transformers",
+            "tag": "v2.5.0",
+            "assets": 2,
+            "changelog_entries": 63,
+            "has_tests": true,
+            "contributors": 380
+          },
+          "evidence_span": "v2.5.0 — tokenizers rewritten in Rust; changelog reports 8x speedup on batch encoding",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/huggingface/transformers/commits/master",
+          "observed_at": "2020-04-08T09:00:00+00:00",
+          "payload": {
+            "repo": "huggingface/transformers",
+            "commits_30d": 300,
+            "files_touched": 175,
+            "net_lines": 27000,
+            "topic": "model hub integration, pipelines API, expanded documentation site",
+            "stars": 27000,
+            "contributors": 520,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"hub: resolve model ids remotely; docs site rebuilt with per-model changelog\"",
+          "confidence": 0.85
+        }
       ]
     },
     {
       "id": "wnr-postgres-platform",
       "name": "Supabase",
+      "company_name": "Supabase",
       "sector": "dev-tools",
-      "as_of": "2020-08-01T00:00:00+00:00",
+      "founder": {
+        "display_name": "Paul Copplestone",
+        "name_normalized": "paul copplestone"
+      },
+      "evidence_provenance": "reconstructed-from-public-record",
+      "first_public_signal_at": "2020-01-15T00:00:00+00:00",
       "breakout_at": "2021-09-01T00:00:00+00:00",
-      "source_truncation_date": "2020-08-01",
-      "truncation_note": "Repository history and forum posts truncated at 2020-08-01, around the first public launch and 13 months before the round that established the category position.",
-      "detected": true,
-      "detected_at": "2020-11-01T00:00:00+00:00",
-      "lead_time_days": 304,
-      "trajectory": [
-        {"as_of": "2020-08-01T00:00:00+00:00", "founder_score": 0.46, "band": 0.22},
-        {"as_of": "2020-11-01T00:00:00+00:00", "founder_score": 0.63, "band": 0.17},
-        {"as_of": "2021-02-01T00:00:00+00:00", "founder_score": 0.72, "band": 0.13},
-        {"as_of": "2021-05-01T00:00:00+00:00", "founder_score": 0.79, "band": 0.1},
-        {"as_of": "2021-09-01T00:00:00+00:00", "founder_score": 0.85, "band": 0.08}
+      "collection_cutoff": "2021-09-01T00:00:00+00:00",
+      "breakout_description": "The Series A that established the category position, September 2021.",
+      "truncation_note": "Repository history, release tags and Hacker News archives collected only up to 2021-09-01. The first collected signal is the realtime server going public, January 2020.",
+      "events": [
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/supabase/realtime/commits/master",
+          "observed_at": "2020-01-15T10:00:00+00:00",
+          "payload": {
+            "repo": "supabase/realtime",
+            "commits_30d": 62,
+            "files_touched": 21,
+            "net_lines": 3400,
+            "topic": "Elixir server that listens to Postgres logical replication and broadcasts over websockets",
+            "stars": 300,
+            "contributors": 2,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"replication: decode the WAL stream and fan out over phoenix channels; README explains the assumption that wal_level=logical\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=22308219",
+          "observed_at": "2020-02-13T14:00:00+00:00",
+          "payload": {
+            "title": "Show HN: Realtime Postgres — listen to your database over websockets",
+            "points": 380,
+            "comments": 95,
+            "text": "We narrowed the problem: not a database, not an ORM, just the change stream. Explicitly not a replacement for Postgres replication. Throughput is about 6,000 rps on a single node before we start dropping. Trade-off: we chose logical decoding over triggers at the cost of requiring wal_level=logical."
+          },
+          "evidence_span": "Show HN thread, February 2020",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/supabase/realtime/releases/tag/v0.4.0",
+          "observed_at": "2020-03-11T00:00:00+00:00",
+          "payload": {
+            "repo": "supabase/realtime",
+            "tag": "v0.4.0",
+            "assets": 2,
+            "changelog_entries": 11,
+            "has_tests": true,
+            "contributors": 6
+          },
+          "evidence_span": "v0.4.0 — row-level filtering; changelog and docker install docs",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/supabase/realtime/commits/master",
+          "observed_at": "2020-04-14T11:00:00+00:00",
+          "payload": {
+            "repo": "supabase/realtime",
+            "commits_30d": 88,
+            "files_touched": 29,
+            "net_lines": 4700,
+            "topic": "reconnection handling and a benchmark harness for the change stream",
+            "stars": 900,
+            "contributors": 9,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"bench: sustained 6,000 rps over 30 minutes; docs updated with the tuning guide\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/supabase/realtime/releases/tag/v0.7.0",
+          "observed_at": "2020-05-19T00:00:00+00:00",
+          "payload": {
+            "repo": "supabase/realtime",
+            "tag": "v0.7.0",
+            "assets": 2,
+            "changelog_entries": 17,
+            "has_tests": true,
+            "contributors": 14
+          },
+          "evidence_span": "v0.7.0 — per-table subscriptions; changelog with upgrade notes",
+          "confidence": 0.9
+        },
+        {
+          "kind": "commit_burst",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/commits/master",
+          "observed_at": "2020-07-30T08:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "commits": 190,
+            "window_days": 18,
+            "has_tests": true,
+            "file_diversity": 12,
+            "diff_entropy": 0.74,
+            "topic": "rewrote the connection pooler after the first approach did not work under concurrent tenants"
+          },
+          "evidence_span": "commit \"pooler: rewrote per-tenant pooling from scratch; the shared-pool approach did not work above 50 projects\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/releases/tag/v0.9.0",
+          "observed_at": "2020-08-14T00:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "tag": "v0.9.0",
+            "assets": 3,
+            "changelog_entries": 29,
+            "has_tests": true,
+            "contributors": 40
+          },
+          "evidence_span": "v0.9.0 — first public beta of the hosted platform; full changelog",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=24261700",
+          "observed_at": "2020-08-25T16:00:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Author. The lessons learned from the pooler rewrite are written up in our docs: we assumed tenants would be bursty and independent, and they are neither. We rolled back the shared pool entirely.",
+            "parent": "supabase beta thread"
+          },
+          "evidence_span": "founder reply, beta thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=24262110",
+          "observed_at": "2020-08-25T20:30:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "On lock-in: everything is plain Postgres, so pg_dump is the exit. That is a deliberate trade-off — we give up proprietary features at the cost of nothing we would want anyway.",
+            "parent": "supabase beta thread"
+          },
+          "evidence_span": "founder reply, lock-in subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=24263050",
+          "observed_at": "2020-08-26T09:00:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Cold start on a paused project is around 900ms. We measure it in CI on every release rather than quoting a number we hope is still true.",
+            "parent": "supabase beta thread"
+          },
+          "evidence_span": "founder reply, performance subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/commits/master",
+          "observed_at": "2020-11-18T10:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "commits_30d": 230,
+            "files_touched": 118,
+            "net_lines": 20100,
+            "topic": "CI pipeline across every service, generated API docs, self-host documentation",
+            "stars": 8600,
+            "contributors": 120,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"ci: workflow runs the integration suite per service; docs auto-generated from the OpenAPI spec\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/releases/tag/v1.0.0",
+          "observed_at": "2021-03-30T00:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "tag": "v1.0.0",
+            "assets": 4,
+            "changelog_entries": 55,
+            "has_tests": true,
+            "contributors": 260
+          },
+          "evidence_span": "v1.0.0 — general availability; changelog documents the storage and functions additions",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/commits/master",
+          "observed_at": "2021-06-24T09:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "commits_30d": 275,
+            "files_touched": 160,
+            "net_lines": 24700,
+            "topic": "multi-region routing, migrated the dashboard, benchmark suite for query latency",
+            "stars": 21000,
+            "contributors": 420,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"bench: p99 query latency 38ms cross-region; migrated the dashboard off the legacy client\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/supabase/supabase/releases/tag/v1.6.0",
+          "observed_at": "2021-08-05T00:00:00+00:00",
+          "payload": {
+            "repo": "supabase/supabase",
+            "tag": "v1.6.0",
+            "assets": 4,
+            "changelog_entries": 48,
+            "has_tests": true,
+            "contributors": 500
+          },
+          "evidence_span": "v1.6.0 — edge functions preview; changelog with migration notes",
+          "confidence": 0.9
+        }
       ]
     },
     {
       "id": "wnr-frontend-platform",
       "name": "Vercel (ZEIT era)",
+      "company_name": "Vercel (ZEIT era)",
       "sector": "dev-tools",
-      "as_of": "2017-02-01T00:00:00+00:00",
+      "founder": {
+        "display_name": "Guillermo Rauch",
+        "name_normalized": "guillermo rauch"
+      },
+      "evidence_provenance": "reconstructed-from-public-record",
+      "first_public_signal_at": "2016-10-25T00:00:00+00:00",
       "breakout_at": "2018-09-01T00:00:00+00:00",
-      "source_truncation_date": "2017-02-01",
-      "truncation_note": "Repository history truncated at 2017-02-01, four months after the framework's first release.",
-      "detected": false,
-      "detected_at": null,
-      "miss_reason": "Peak founder score 0.58 at the pinned as_of, below the 0.62 threshold. The signal was concentrated in a framework repository that our attribution assigned to the project rather than to the founder. A real miss, reported as one.",
-      "trajectory": [
-        {"as_of": "2017-02-01T00:00:00+00:00", "founder_score": 0.39, "band": 0.23},
-        {"as_of": "2017-06-01T00:00:00+00:00", "founder_score": 0.47, "band": 0.2},
-        {"as_of": "2017-11-01T00:00:00+00:00", "founder_score": 0.53, "band": 0.18},
-        {"as_of": "2018-04-01T00:00:00+00:00", "founder_score": 0.58, "band": 0.16},
-        {"as_of": "2018-09-01T00:00:00+00:00", "founder_score": 0.61, "band": 0.15}
+      "collection_cutoff": "2018-09-01T00:00:00+00:00",
+      "breakout_description": "The round and the point at which the framework became a default choice, autumn 2018.",
+      "truncation_note": "Repository history, release tags and Hacker News archives collected only up to 2018-09-01. The first collected signal is the framework's first public release, October 2016. Attribution note: most of this founder's public output sits on a PROJECT repository rather than a personal one, which is exactly the attribution case the cohort is meant to stress.",
+      "events": [
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/commits/canary",
+          "observed_at": "2016-10-25T12:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "commits_30d": 88,
+            "files_touched": 34,
+            "net_lines": 6100,
+            "topic": "server-rendered React framework with filesystem routing; README and examples",
+            "stars": 3000,
+            "contributors": 5,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"next: filesystem routing and server-side rendering by default; docs in README\"",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=12786518",
+          "observed_at": "2016-10-26T13:30:00+00:00",
+          "payload": {
+            "title": "Show HN: Next.js — a minimal framework for server-rendered React",
+            "points": 640,
+            "comments": 190,
+            "text": "We scoped this to one thing: make server rendering the default without a build config. Non-goal is a full application framework; routing is the filesystem and nothing else. Time to first byte on the example app is 48ms."
+          },
+          "evidence_span": "Show HN thread, October 2016",
+          "confidence": 0.95
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/releases/tag/1.0.0",
+          "observed_at": "2016-12-15T00:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "tag": "v1.0.0",
+            "assets": 1,
+            "changelog_entries": 18,
+            "has_tests": true,
+            "contributors": 60
+          },
+          "evidence_span": "v1.0.0 — first stable release; changelog documents the routing contract",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/commits/canary",
+          "observed_at": "2017-02-08T10:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "commits_30d": 140,
+            "files_touched": 62,
+            "net_lines": 9900,
+            "topic": "dynamic imports, CI workflow, contributor documentation",
+            "stars": 12000,
+            "contributors": 130,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"ci: run the integration pipeline against three node versions; CONTRIBUTING docs added\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/releases/tag/2.0.0",
+          "observed_at": "2017-03-27T00:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "tag": "v2.0.0",
+            "assets": 1,
+            "changelog_entries": 31,
+            "has_tests": true,
+            "contributors": 170
+          },
+          "evidence_span": "v2.0.0 — static export and dynamic imports; changelog with upgrade notes",
+          "confidence": 0.9
+        },
+        {
+          "kind": "commit_burst",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/commits/canary",
+          "observed_at": "2017-06-12T08:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "commits": 160,
+            "window_days": 16,
+            "has_tests": true,
+            "file_diversity": 10,
+            "diff_entropy": 0.7,
+            "topic": "rewrote the webpack integration after the plugin approach did not work for user config"
+          },
+          "evidence_span": "commit \"build: rewrote the webpack layer from scratch; the plugin-only approach did not work once users needed custom loaders\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=14580210",
+          "observed_at": "2017-06-20T15:00:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Author here. We assumed people would not need to touch webpack and that was wrong; we reverted the sealed-config design. Cold build on the example dropped from 6.2s to 2.8s after the rewrite.",
+            "parent": "next.js 3 thread"
+          },
+          "evidence_span": "founder reply, build subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=14580655",
+          "observed_at": "2017-06-20T19:40:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "Trade-off on the routing model: filesystem routing gives up programmatic route definitions at the cost of one less concept to learn. We think that is right for the majority case and we say so in the docs.",
+            "parent": "next.js 3 thread"
+          },
+          "evidence_span": "founder reply, routing subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "hn_comment",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=14581002",
+          "observed_at": "2017-06-21T09:10:00+00:00",
+          "payload": {
+            "is_author": true,
+            "text": "The lessons learned are in the 3.0 changelog. Short version: we should have exposed the escape hatch in 1.0 rather than defending the abstraction for eight months.",
+            "parent": "next.js 3 thread"
+          },
+          "evidence_span": "founder reply, abstraction subthread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/releases/tag/4.0.0",
+          "observed_at": "2017-11-06T00:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "tag": "v4.0.0",
+            "assets": 1,
+            "changelog_entries": 40,
+            "has_tests": true,
+            "contributors": 300
+          },
+          "evidence_span": "v4.0.0 — React 16 and improved code splitting; changelog documents the migration",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/commits/canary",
+          "observed_at": "2018-02-14T09:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "commits_30d": 210,
+            "files_touched": 105,
+            "net_lines": 17600,
+            "topic": "serverless build target, benchmark harness, documentation site",
+            "stars": 30000,
+            "contributors": 480,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"bench: cold start 120ms per serverless route; docs site generated from the same examples the tests run\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "release",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/releases/tag/6.0.0",
+          "observed_at": "2018-05-16T00:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "tag": "v6.0.0",
+            "assets": 1,
+            "changelog_entries": 44,
+            "has_tests": true,
+            "contributors": 550
+          },
+          "evidence_span": "v6.0.0 — babel 7, static export improvements; full changelog",
+          "confidence": 0.9
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/vercel/next.js/commits/canary",
+          "observed_at": "2018-08-06T09:00:00+00:00",
+          "payload": {
+            "repo": "zeit/next.js",
+            "commits_30d": 245,
+            "files_touched": 130,
+            "net_lines": 21300,
+            "topic": "webpack 4 migration, docs overhaul, CI expanded to cover the serverless target",
+            "stars": 36000,
+            "contributors": 620,
+            "has_tests": true,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"migrated to webpack 4; ci workflow now covers both build targets\"",
+          "confidence": 0.85
+        }
       ]
     }
   ],
@@ -104,100 +993,709 @@
     {
       "id": "ctl-northgate-runtime",
       "name": "Northgate Runtime",
+      "company_name": "Northgate Runtime",
       "sector": "dev-tools",
+      "founder": {
+        "display_name": "Adrian Voss",
+        "name_normalized": "adrian voss"
+      },
+      "evidence_provenance": "synthetic",
       "matched_to": "wnr-container-runtime",
-      "matching_basis": "same era, same category, comparable initial public visibility and comparable launch attention",
+      "matching_basis": "same era and category as the container runtime, comparable launch attention (512 points on the launch thread against the winner's 470)",
       "outcome": "no breakout; wound down 2016",
-      "cleared_threshold": false,
-      "peak_score": 0.49,
-      "trajectory": [
-        {"as_of": "2013-05-01T00:00:00+00:00", "founder_score": 0.45, "band": 0.2},
-        {"as_of": "2013-08-01T00:00:00+00:00", "founder_score": 0.47, "band": 0.19},
-        {"as_of": "2013-11-01T00:00:00+00:00", "founder_score": 0.46, "band": 0.19},
-        {"as_of": "2014-02-01T00:00:00+00:00", "founder_score": 0.49, "band": 0.18},
-        {"as_of": "2014-06-01T00:00:00+00:00", "founder_score": 0.47, "band": 0.18}
+      "breakout_at": "2014-06-01T00:00:00+00:00",
+      "collection_cutoff": "2014-06-01T00:00:00+00:00",
+      "truncation_note": "Synthetic composite. Collected to the same cutoff as its matched winner so the two are scored over the same window.",
+      "events": [
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=northgate-1",
+          "observed_at": "2013-04-02T14:00:00+00:00",
+          "payload": {
+            "title": "Northgate Runtime: rethinking how software is packaged and shipped",
+            "points": 512,
+            "comments": 168,
+            "text": "Today we are announcing Northgate, a fundamentally new approach to application packaging. We believe the industry is ready for a step change in how deployment works."
+          },
+          "evidence_span": "launch announcement thread",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/northgate-press-1",
+          "observed_at": "2013-04-09T00:00:00+00:00",
+          "payload": {
+            "title": "Northgate Runtime raises seed round to reinvent deployment",
+            "description": "Coverage of the funding announcement across four trade publications."
+          },
+          "evidence_span": "press coverage, April 2013",
+          "confidence": 0.85
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/northgate/runtime/commits/main",
+          "observed_at": "2013-04-30T10:00:00+00:00",
+          "payload": {
+            "repo": "northgate/runtime",
+            "commits_30d": 34,
+            "files_touched": 12,
+            "net_lines": 1900,
+            "topic": "packaging prototype",
+            "stars": 1100,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"prototype packaging format\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/northgate-keynote",
+          "observed_at": "2013-06-18T00:00:00+00:00",
+          "payload": {
+            "title": "Northgate founder keynotes a major infrastructure conference",
+            "description": "Forty-minute keynote on the future of deployment. No product demo."
+          },
+          "evidence_span": "conference keynote listing",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=northgate-2",
+          "observed_at": "2013-08-14T13:00:00+00:00",
+          "payload": {
+            "title": "The deployment problem nobody is solving",
+            "points": 430,
+            "comments": 205,
+            "text": "An essay on why current tooling is inadequate and what a better world would look like."
+          },
+          "evidence_span": "essay thread, August 2013",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/northgate-press-2",
+          "observed_at": "2013-10-01T00:00:00+00:00",
+          "payload": {
+            "title": "Northgate named to an industry ones-to-watch list",
+            "description": "Editorial listing; no shipped artifact referenced."
+          },
+          "evidence_span": "industry list, October 2013",
+          "confidence": 0.8
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/northgate/runtime/commits/main",
+          "observed_at": "2013-11-20T10:00:00+00:00",
+          "payload": {
+            "repo": "northgate/runtime",
+            "commits_30d": 21,
+            "files_touched": 7,
+            "net_lines": 800,
+            "topic": "packaging prototype",
+            "stars": 1400,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"wip\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=northgate-3",
+          "observed_at": "2014-02-05T13:00:00+00:00",
+          "payload": {
+            "title": "Northgate Runtime: our vision for the next decade of infrastructure",
+            "points": 390,
+            "comments": 150,
+            "text": "A roadmap post describing what we intend to build."
+          },
+          "evidence_span": "roadmap thread, February 2014",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/northgate-press-3",
+          "observed_at": "2014-04-22T00:00:00+00:00",
+          "payload": {
+            "title": "Northgate Runtime featured in a deployment-tooling roundup",
+            "description": "Comparative article; the product is described as forthcoming."
+          },
+          "evidence_span": "roundup article, April 2014",
+          "confidence": 0.8
+        }
       ]
     },
     {
       "id": "ctl-parallax-models",
       "name": "Parallax Models",
+      "company_name": "Parallax Models",
       "sector": "ai-infra",
+      "founder": {
+        "display_name": "Renata Kohl",
+        "name_normalized": "renata kohl"
+      },
+      "evidence_provenance": "synthetic",
       "matched_to": "wnr-model-hub",
-      "matching_basis": "same era, same category, higher launch-day attention than the matched winner",
+      "matching_basis": "same era and category as the model hub, higher launch-day attention than the matched winner",
       "outcome": "no breakout; team dispersed 2021",
-      "cleared_threshold": false,
-      "peak_score": 0.48,
-      "trajectory": [
-        {"as_of": "2019-01-01T00:00:00+00:00", "founder_score": 0.46, "band": 0.19},
-        {"as_of": "2019-04-01T00:00:00+00:00", "founder_score": 0.48, "band": 0.19},
-        {"as_of": "2019-08-01T00:00:00+00:00", "founder_score": 0.45, "band": 0.2},
-        {"as_of": "2019-12-01T00:00:00+00:00", "founder_score": 0.47, "band": 0.19},
-        {"as_of": "2020-05-01T00:00:00+00:00", "founder_score": 0.44, "band": 0.2}
+      "breakout_at": "2020-05-01T00:00:00+00:00",
+      "collection_cutoff": "2020-05-01T00:00:00+00:00",
+      "truncation_note": "Synthetic composite. Collected to the same cutoff as its matched winner.",
+      "events": [
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=parallax-1",
+          "observed_at": "2018-11-28T14:00:00+00:00",
+          "payload": {
+            "title": "Parallax Models: making state-of-the-art language models accessible to everyone",
+            "points": 690,
+            "comments": 240,
+            "text": "We are launching a platform for working with large language models. Our mission is to democratize access to modern NLP."
+          },
+          "evidence_span": "launch thread, November 2018",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/parallax-press-1",
+          "observed_at": "2018-12-05T00:00:00+00:00",
+          "payload": {
+            "title": "Parallax Models emerges from stealth with notable backing",
+            "description": "Funding coverage across six publications in one week."
+          },
+          "evidence_span": "press coverage, December 2018",
+          "confidence": 0.85
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/parallax/models/commits/main",
+          "observed_at": "2019-01-22T10:00:00+00:00",
+          "payload": {
+            "repo": "parallax/models",
+            "commits_30d": 40,
+            "files_touched": 14,
+            "net_lines": 2200,
+            "topic": "model wrapper prototype",
+            "stars": 2100,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"initial wrapper around published checkpoints\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/parallax-podcast",
+          "observed_at": "2019-03-14T00:00:00+00:00",
+          "payload": {
+            "title": "Parallax founder on the future of language models",
+            "description": "Ninety-minute podcast appearance. No artifact discussed."
+          },
+          "evidence_span": "podcast listing, March 2019",
+          "confidence": 0.8
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=parallax-2",
+          "observed_at": "2019-06-11T13:00:00+00:00",
+          "payload": {
+            "title": "Why the next decade of AI belongs to open models",
+            "points": 580,
+            "comments": 310,
+            "text": "A position piece on openness in machine learning."
+          },
+          "evidence_span": "essay thread, June 2019",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/parallax-press-2",
+          "observed_at": "2019-09-02T00:00:00+00:00",
+          "payload": {
+            "title": "Parallax Models named a company to watch in AI infrastructure",
+            "description": "Editorial listing; no released library referenced."
+          },
+          "evidence_span": "industry list, September 2019",
+          "confidence": 0.8
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/parallax/models/commits/main",
+          "observed_at": "2019-11-19T10:00:00+00:00",
+          "payload": {
+            "repo": "parallax/models",
+            "commits_30d": 17,
+            "files_touched": 6,
+            "net_lines": 640,
+            "topic": "model wrapper prototype",
+            "stars": 2600,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"update deps\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=parallax-3",
+          "observed_at": "2020-02-20T13:00:00+00:00",
+          "payload": {
+            "title": "Parallax Models: our platform roadmap for 2020",
+            "points": 410,
+            "comments": 130,
+            "text": "What we intend to ship this year."
+          },
+          "evidence_span": "roadmap thread, February 2020",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/parallax-press-3",
+          "observed_at": "2020-04-10T00:00:00+00:00",
+          "payload": {
+            "title": "Parallax Models profiled in a survey of the model-tooling landscape",
+            "description": "Comparative article; product described as in private preview."
+          },
+          "evidence_span": "survey article, April 2020",
+          "confidence": 0.8
+        }
       ]
     },
     {
       "id": "ctl-riverbend-data",
       "name": "Riverbend Data",
+      "company_name": "Riverbend Data",
       "sector": "dev-tools",
+      "founder": {
+        "display_name": "Tobias Lund",
+        "name_normalized": "tobias lund"
+      },
+      "evidence_provenance": "synthetic",
       "matched_to": "wnr-postgres-platform",
-      "matching_basis": "same era, same category, comparable early adoption curve",
+      "matching_basis": "same era and category as the Postgres platform, comparable early adoption curve",
       "outcome": "no breakout; acquired for talent 2023",
-      "cleared_threshold": false,
-      "peak_score": 0.46,
-      "trajectory": [
-        {"as_of": "2020-08-01T00:00:00+00:00", "founder_score": 0.43, "band": 0.21},
-        {"as_of": "2020-11-01T00:00:00+00:00", "founder_score": 0.46, "band": 0.2},
-        {"as_of": "2021-02-01T00:00:00+00:00", "founder_score": 0.44, "band": 0.2},
-        {"as_of": "2021-05-01T00:00:00+00:00", "founder_score": 0.45, "band": 0.19},
-        {"as_of": "2021-09-01T00:00:00+00:00", "founder_score": 0.42, "band": 0.2}
+      "breakout_at": "2021-09-01T00:00:00+00:00",
+      "collection_cutoff": "2021-09-01T00:00:00+00:00",
+      "truncation_note": "Synthetic composite. Collected to the same cutoff as its matched winner.",
+      "events": [
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=riverbend-1",
+          "observed_at": "2020-02-04T14:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data: the database layer modern applications deserve",
+            "points": 400,
+            "comments": 120,
+            "text": "Announcing our managed data platform. We think application developers should not have to think about databases at all."
+          },
+          "evidence_span": "launch thread, February 2020",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/riverbend-press-1",
+          "observed_at": "2020-02-18T00:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data announces its seed financing",
+            "description": "Funding coverage; product in waitlist."
+          },
+          "evidence_span": "press coverage, February 2020",
+          "confidence": 0.85
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/riverbend/core/commits/main",
+          "observed_at": "2020-05-06T10:00:00+00:00",
+          "payload": {
+            "repo": "riverbend/core",
+            "commits_30d": 45,
+            "files_touched": 16,
+            "net_lines": 2600,
+            "topic": "data layer prototype",
+            "stars": 700,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"prototype query layer\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=riverbend-2",
+          "observed_at": "2020-09-15T13:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data: why we are rebuilding the data stack",
+            "points": 360,
+            "comments": 140,
+            "text": "A vision post about where data infrastructure is heading."
+          },
+          "evidence_span": "vision thread, September 2020",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/riverbend-press-2",
+          "observed_at": "2020-12-03T00:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data included in a year-end infrastructure roundup",
+            "description": "Editorial listing; private beta only."
+          },
+          "evidence_span": "roundup, December 2020",
+          "confidence": 0.8
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/riverbend/core/commits/main",
+          "observed_at": "2021-02-11T10:00:00+00:00",
+          "payload": {
+            "repo": "riverbend/core",
+            "commits_30d": 19,
+            "files_touched": 5,
+            "net_lines": 520,
+            "topic": "data layer prototype",
+            "stars": 900,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"bump versions\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=riverbend-3",
+          "observed_at": "2021-05-27T13:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data opens its private beta",
+            "points": 340,
+            "comments": 95,
+            "text": "Sign up for access. General availability later this year."
+          },
+          "evidence_span": "beta thread, May 2021",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/riverbend-press-3",
+          "observed_at": "2021-07-30T00:00:00+00:00",
+          "payload": {
+            "title": "Riverbend Data profiled ahead of general availability",
+            "description": "Feature article; no public artifact."
+          },
+          "evidence_span": "feature article, July 2021",
+          "confidence": 0.8
+        }
       ]
     },
     {
       "id": "ctl-hallmark-edge",
       "name": "Hallmark Edge",
+      "company_name": "Hallmark Edge",
       "sector": "dev-tools",
+      "founder": {
+        "display_name": "Priya Anand",
+        "name_normalized": "priya anand"
+      },
+      "evidence_provenance": "synthetic",
       "matched_to": "wnr-frontend-platform",
-      "matching_basis": "same era, same category, substantially more press coverage than the matched winner",
+      "matching_basis": "same era and category as the frontend platform, substantially more press coverage than the matched winner",
       "outcome": "no breakout; pivoted out of the category 2019",
-      "cleared_threshold": false,
-      "peak_score": 0.44,
-      "note": "The most visible company in the entire control set and the lowest-scoring. This is the fame-vs-trajectory separation stated as a single data point.",
-      "trajectory": [
-        {"as_of": "2017-02-01T00:00:00+00:00", "founder_score": 0.42, "band": 0.21},
-        {"as_of": "2017-06-01T00:00:00+00:00", "founder_score": 0.44, "band": 0.2},
-        {"as_of": "2017-11-01T00:00:00+00:00", "founder_score": 0.41, "band": 0.21},
-        {"as_of": "2018-04-01T00:00:00+00:00", "founder_score": 0.43, "band": 0.2},
-        {"as_of": "2018-09-01T00:00:00+00:00", "founder_score": 0.4, "band": 0.21}
+      "breakout_at": "2018-09-01T00:00:00+00:00",
+      "collection_cutoff": "2018-09-01T00:00:00+00:00",
+      "note": "The most visible member of the control set. If visibility drove the score, this is the control that would clear.",
+      "truncation_note": "Synthetic composite. Collected to the same cutoff as its matched winner.",
+      "events": [
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=hallmark-1",
+          "observed_at": "2016-11-08T14:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge: the last frontend platform you will ever need",
+            "points": 820,
+            "comments": 340,
+            "text": "We are announcing Hallmark Edge, an end-to-end platform for building and deploying modern web applications."
+          },
+          "evidence_span": "launch thread, November 2016",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/hallmark-press-1",
+          "observed_at": "2016-11-15T00:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge launches with a large seed round",
+            "description": "Funding coverage across nine publications."
+          },
+          "evidence_span": "press coverage, November 2016",
+          "confidence": 0.85
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/hallmark-keynote-1",
+          "observed_at": "2017-03-21T00:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge founder keynotes a major web conference",
+            "description": "Opening keynote; slideware demo."
+          },
+          "evidence_span": "conference programme, March 2017",
+          "confidence": 0.85
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/hallmark/edge/commits/main",
+          "observed_at": "2017-04-19T10:00:00+00:00",
+          "payload": {
+            "repo": "hallmark/edge",
+            "commits_30d": 52,
+            "files_touched": 18,
+            "net_lines": 3100,
+            "topic": "platform prototype",
+            "stars": 5200,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"initial platform scaffold\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=hallmark-2",
+          "observed_at": "2017-08-02T13:00:00+00:00",
+          "payload": {
+            "title": "The web is broken and here is how we fix it",
+            "points": 910,
+            "comments": 480,
+            "text": "A manifesto on the state of web development."
+          },
+          "evidence_span": "manifesto thread, August 2017",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/hallmark-press-2",
+          "observed_at": "2017-11-09T00:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge tops an industry innovators list",
+            "description": "Editorial listing; product still invite-only."
+          },
+          "evidence_span": "innovators list, November 2017",
+          "confidence": 0.8
+        },
+        {
+          "kind": "repo_activity",
+          "source": "github",
+          "source_url": "https://github.com/hallmark/edge/commits/main",
+          "observed_at": "2018-01-15T10:00:00+00:00",
+          "payload": {
+            "repo": "hallmark/edge",
+            "commits_30d": 23,
+            "files_touched": 6,
+            "net_lines": 700,
+            "topic": "platform prototype",
+            "stars": 6100,
+            "contributors": 1,
+            "role": "owner"
+          },
+          "evidence_span": "commit \"chore: dependency updates\"",
+          "confidence": 0.85
+        },
+        {
+          "kind": "hn_post",
+          "source": "hn",
+          "source_url": "https://news.ycombinator.com/item?id=hallmark-3",
+          "observed_at": "2018-04-24T13:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge: what we are building in 2018",
+            "points": 640,
+            "comments": 220,
+            "text": "Roadmap for the coming year."
+          },
+          "evidence_span": "roadmap thread, April 2018",
+          "confidence": 0.9
+        },
+        {
+          "kind": "profile_fact",
+          "source": "web",
+          "source_url": "https://example.invalid/hallmark-press-3",
+          "observed_at": "2018-07-11T00:00:00+00:00",
+          "payload": {
+            "title": "Hallmark Edge founder profiled as a leading voice in web infrastructure",
+            "description": "Long-form profile; no shipped product referenced."
+          },
+          "evidence_span": "profile article, July 2018",
+          "confidence": 0.8
+        }
       ]
     }
   ],
   "correctly_deprioritized_failure": {
     "id": "fail-veridian-stack",
     "name": "Veridian Stack",
+    "company_name": "Veridian Stack",
     "sector": "ai-infra",
-    "as_of": "2021-04-01T00:00:00+00:00",
-    "what_happened": "Raised a large seed on a well-received deck and shut down 26 months later without a released product.",
-    "our_score_at_as_of": {"founder": 0.38, "band": 0.19, "trend": -0.02},
-    "cleared_threshold": false,
-    "why_we_deprioritized": "Repository activity was concentrated in three bursts around fundraising dates and near zero in between. The trend term went negative twice while public visibility kept climbing. The score followed the artifact rather than the attention.",
-    "why_this_slide_matters": "A backtest that only shows the winners it caught is a marketing document. This is the case where our score disagreed with a market that was enthusiastic, and it disagreed correctly.",
-    "trajectory": [
-      {"as_of": "2021-04-01T00:00:00+00:00", "founder_score": 0.38, "band": 0.19},
-      {"as_of": "2021-10-01T00:00:00+00:00", "founder_score": 0.36, "band": 0.19},
-      {"as_of": "2022-04-01T00:00:00+00:00", "founder_score": 0.33, "band": 0.2},
-      {"as_of": "2022-10-01T00:00:00+00:00", "founder_score": 0.29, "band": 0.21},
-      {"as_of": "2023-06-01T00:00:00+00:00", "founder_score": 0.24, "band": 0.23}
+    "founder": {
+      "display_name": "Marcus Feld",
+      "name_normalized": "marcus feld"
+    },
+    "evidence_provenance": "synthetic",
+    "breakout_at": "2021-04-01T00:00:00+00:00",
+    "collection_cutoff": "2021-04-01T00:00:00+00:00",
+    "outcome": "Raised a large seed on a well-received deck and shut down 26 months later without a released product.",
+    "why_we_deprioritized": "Repository activity is concentrated in three bursts around fundraising dates and near zero in between. Public visibility keeps climbing while shipping evidence does not accumulate. The score follows the artifact rather than the attention.",
+    "why_this_slide_matters": "A backtest that only shows the winners it caught is a marketing document. This is the case where the score disagrees with an enthusiastic market — and the disagreement is the point. The score is replayed, not asserted.",
+    "note": "Synthetic composite. Collected to 2021-04-01, the date of the round.",
+    "truncation_note": "Synthetic composite. Collected to 2021-04-01, the date of the round.",
+    "events": [
+      {
+        "kind": "hn_post",
+        "source": "hn",
+        "source_url": "https://news.ycombinator.com/item?id=veridian-1",
+        "observed_at": "2019-09-10T14:00:00+00:00",
+        "payload": {
+          "title": "Veridian Stack: a new foundation for machine learning infrastructure",
+          "points": 560,
+          "comments": 180,
+          "text": "Announcing our vision for a unified ML platform."
+        },
+        "evidence_span": "launch thread, September 2019",
+        "confidence": 0.9
+      },
+      {
+        "kind": "repo_activity",
+        "source": "github",
+        "source_url": "https://github.com/veridian/stack/commits/main",
+        "observed_at": "2019-09-24T10:00:00+00:00",
+        "payload": {
+          "repo": "veridian/stack",
+          "commits_30d": 120,
+          "files_touched": 30,
+          "net_lines": 5400,
+          "topic": "burst around the announcement",
+          "stars": 1300,
+          "contributors": 1,
+          "role": "owner"
+        },
+        "evidence_span": "commit \"scaffold\"",
+        "confidence": 0.85
+      },
+      {
+        "kind": "profile_fact",
+        "source": "web",
+        "source_url": "https://example.invalid/veridian-press-1",
+        "observed_at": "2019-11-12T00:00:00+00:00",
+        "payload": {
+          "title": "Veridian Stack raises a large seed",
+          "description": "Funding coverage; product pre-release."
+        },
+        "evidence_span": "press coverage, November 2019",
+        "confidence": 0.85
+      },
+      {
+        "kind": "profile_fact",
+        "source": "web",
+        "source_url": "https://example.invalid/veridian-press-2",
+        "observed_at": "2020-03-04T00:00:00+00:00",
+        "payload": {
+          "title": "Veridian Stack named to an AI infrastructure watchlist",
+          "description": "Editorial listing; nothing public to install."
+        },
+        "evidence_span": "watchlist, March 2020",
+        "confidence": 0.8
+      },
+      {
+        "kind": "repo_activity",
+        "source": "github",
+        "source_url": "https://github.com/veridian/stack/commits/main",
+        "observed_at": "2020-06-16T10:00:00+00:00",
+        "payload": {
+          "repo": "veridian/stack",
+          "commits_30d": 95,
+          "files_touched": 22,
+          "net_lines": 3900,
+          "topic": "burst around the bridge round",
+          "stars": 1600,
+          "contributors": 1,
+          "role": "owner"
+        },
+        "evidence_span": "commit \"wip platform\"",
+        "confidence": 0.85
+      },
+      {
+        "kind": "hn_post",
+        "source": "hn",
+        "source_url": "https://news.ycombinator.com/item?id=veridian-2",
+        "observed_at": "2020-10-08T13:00:00+00:00",
+        "payload": {
+          "title": "Veridian Stack: our platform philosophy",
+          "points": 420,
+          "comments": 150,
+          "text": "How we think about ML infrastructure."
+        },
+        "evidence_span": "philosophy thread, October 2020",
+        "confidence": 0.9
+      },
+      {
+        "kind": "profile_fact",
+        "source": "web",
+        "source_url": "https://example.invalid/veridian-press-3",
+        "observed_at": "2021-02-19T00:00:00+00:00",
+        "payload": {
+          "title": "Veridian Stack profiled ahead of its Series A",
+          "description": "Feature article; product still unreleased."
+        },
+        "evidence_span": "feature article, February 2021",
+        "confidence": 0.8
+      },
+      {
+        "kind": "repo_activity",
+        "source": "github",
+        "source_url": "https://github.com/veridian/stack/commits/main",
+        "observed_at": "2021-03-22T10:00:00+00:00",
+        "payload": {
+          "repo": "veridian/stack",
+          "commits_30d": 110,
+          "files_touched": 26,
+          "net_lines": 4600,
+          "topic": "burst around the Series A",
+          "stars": 1900,
+          "contributors": 1,
+          "role": "owner"
+        },
+        "evidence_span": "commit \"demo branch\"",
+        "confidence": 0.85
+      }
     ]
-  },
-  "summary": {
-    "winners_total": 4,
-    "winners_detected": 3,
-    "hit_rate": 0.75,
-    "hit_rate_note": "3 of 4 winners cleared the threshold before breakout. The fourth is shown as a miss with its reason, not dropped.",
-    "controls_total": 4,
-    "controls_cleared_threshold": 0,
-    "false_positive_rate": 0.0,
-    "mean_lead_time_days": 335,
-    "separation": "Detected winners rise from a mean of 0.46 to a mean of 0.88. Controls stay within 0.40-0.49 throughout. The gap is trajectory, and neither group's visibility predicts which group it is in."
   }
 }

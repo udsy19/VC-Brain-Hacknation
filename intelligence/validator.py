@@ -18,6 +18,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from core import llm
 from core import search as web_search
 from core.search import SearchResult
+from intelligence import flags
 from schema.events import ClaimStatus, ClaimVerdict, Event, EventKind, Source, utcnow
 
 Judge = Callable[..., str | dict]
@@ -96,7 +97,9 @@ def check_claim(
     """Pure per-claim validator. Search text reaches the judge only as untrusted data."""
     if claim.kind != EventKind.DECK_CLAIM:
         raise ValueError("check_claim requires a DECK_CLAIM event")
-    if claim.integrity_flags:
+    # Only tampered claim text is refused. A transliterated or OCR-soft claim is
+    # still a claim we can and should try to corroborate.
+    if flags.is_impeached(claim):
         return _verdict(claim, ClaimStatus.NOT_ATTEMPTED)
     if not results:
         return _verdict(claim, ClaimStatus.UNVERIFIABLE)
@@ -209,7 +212,7 @@ def check_claims(company_id: UUID, as_of: datetime | None = None) -> list[ClaimV
         for event in history:
             if event.kind in {EventKind.DECK_CLAIM, EventKind.VALIDATION_RESULT}:
                 continue
-            if not event.source_url or not event.evidence_span or event.integrity_flags:
+            if not event.source_url or not event.evidence_span or flags.is_impeached(event):
                 continue
             stored_results.append(
                 SearchResult(
