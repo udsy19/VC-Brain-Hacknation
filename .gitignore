@@ -54,3 +54,5 @@ data/llm_cache_test_untrusted/
 
 # agent working files
 scratchpad/
+.vercel
+.env*
